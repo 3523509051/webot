@@ -226,14 +226,18 @@ screen-off.cmd            # 双击：体检 → 切虚拟屏（物理屏真黑�
 详细原理、踩坑记录与排查见 [`docs/deployment.md`](docs/deployment.md) §4.3。
 
 > 驱动包不随本仓库分发（第三方样例驱动）。从 Amyuni 官方样例包或
-> <https://github.com/IYATT-yx/NullSignal> 内附的同一份获取，放到 `tools\vdd\`。
+> <https://github.com/IYATT-yx/NullSignal> 内附的同一份获取。
+>
+> ⚠️ 脚本按**固定路径**找驱动：`tools\vdd\amyuni\usbmmidd_v2\deviceinstaller64.exe` ——
+> 拿到驱动包后请按这个目录结构放置（否则熄屏会报 `✗ 找不到虚拟显示器驱动包`）。
 
 ### 8.（可选）本地知识库 L4
 
+前提：先装 **Ollama** 并保持后台运行（`winget install -e --id Ollama.Ollama`）。
 L4 用**本地嵌入**（Ollama `bge-m3`）做语义检索，需要额外约 2 GB 内存：
 
 ```powershell
-scripts\pull_ollama_model.ps1     # 拉取 bge-m3
+scripts\pull_ollama_model.ps1     # 拉取 bge-m3（绕过代理 fake-IP 导致的 pull 失败）
 ```
 
 不需要长期知识库的话，把插件 `config.json` 的 `kb_enable` 设为 `false` 即可关掉
@@ -249,6 +253,9 @@ screen-off.cmd                     # 熄屏挂机
 docker compose logs -f astrbot     # 框架日志
 Get-Content c:\webot\bridge\bridge.err.log -Encoding Default -Tail 50   # 桥日志
 ```
+
+> ⚠️ **开机自启未配置**：重启电脑后机器人不会自己起来，要手动双击 `start.cmd`
+>（它会拉起 Docker Desktop → 起容器 → 起桥）。想自动化就建一个"登录时运行 start.cmd"的计划任务。
 
 **群内命令**（在群里直接发）：
 
@@ -295,6 +302,8 @@ webot/
    桥的拟人节奏层（`rhythm`）**不要改成 `off`**。
 2. **不能锁屏**：界面自动化需要可见的窗口会话 —— 锁屏（Win+L）、注销、断开远程桌面
    都会让键盘/点击失效。请关闭自动锁屏（熄屏≠锁屏，本项目的熄屏方案不影响发送）。
+   另外：机器人**发送时会自动把微信窗口切到前台**（界面自动化的需要）——
+   你正用电脑时它回消息，微信会跳到最前面，属正常现象。
 3. **不要暴露到公网**：面板（6185）与 OneBot（6199）只监听本机。若需远程访问，请走内网/隧道并加认证。
 4. **密钥与隐私**：`.env`、`data/`（含会话、记忆、知识库）、`bridge/config.json`、`logs/` 都已被
    `.gitignore` 忽略 —— **提交前请再 `git status` 过一眼**。聊天记录与群员画像属于隐私数据，别传上去。

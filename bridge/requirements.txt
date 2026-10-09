@@ -8,3 +8,11 @@ pypinyin
 
 # 与 AstrBot(aiocqhttp / OneBot v11) 通信
 websockets
+
+# 表情包 → 静态帧（wechat_client.sticker_frame）：
+#   zstandard        解压表情消息的压缩正文（拿到 md5 / cdnurl）
+#   Pillow           动图取第一帧、转 JPEG
+#   imageio-ffmpeg   WXGF/HEVC 容器转码（wechatauto 媒体模块使用）
+zstandard
+Pillow
+imageio-ffmpeg
