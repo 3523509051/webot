@@ -211,17 +211,10 @@ function Invoke-Start {
     try {
         # 为什么套一层 cmd /c：docker compose 的进度输出走 **stderr**，
         # 直接执行会被 PowerShell 当成 NativeCommandError 刷一屏红字（不影响结果，但很吓人）。
+        # --no-deps：compose 早期曾 depends_on wechatpadpro（Pad 路线遗留，服务已删除）——
+        # 现在没有依赖了，这个参数只是无害的保险，保留。
         cmd /c "docker compose up -d --no-deps astrbot 2>&1" |
             ForEach-Object { Say "    $($_.ToString().TrimEnd())" }
-
-        # --no-deps：compose 里 astrbot 原本 depends_on wechatpadpro（Pad 路线遗留），
-        # 不去掉会连带启动 mysql/redis、还要多等健康检查。
-        #
-        # 另外这三个服务都带 `restart: always`，Docker 引擎一启动就会把它们自动拉回来
-        # —— 这是每次开机后它们都在跑的原因（不是 --no-deps 失效）。这里顺手停掉；
-        # 手动 stop 之后它们不会再自己起来（想彻底根治就把 compose 里的 restart 去掉，
-        # 或给它们加 `profiles: ["pad"]`）。
-        cmd /c "docker compose stop wechatpadpro mysql redis 2>&1" | Out-Null
     } finally {
         Pop-Location
     }
