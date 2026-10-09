@@ -359,6 +359,7 @@ webot/
 | [`docs/tech-stack.md`](docs/tech-stack.md) | 选型与路线对比、风险登记 |
 | [`docs/latency-diagnosis.md`](docs/latency-diagnosis.md) | 延迟量化与优化记录 |
 | [`docs/porting.md`](docs/porting.md) | **换机器/迁移指南**（哪些能直接搬、哪些要重做） |
+| [`docs/deploy-sp4.md`](docs/deploy-sp4.md) | **Surface Pro 4 部署 Runbook**（写给执行部署的 AI agent：阶段化步骤 + 验收 + 故障对照） |
 | [`docs/wechatpadpro-notes.md`](docs/wechatpadpro-notes.md) | 备用路线：Pad 协议桥的调研与排错记录 |
 | [`docs/roadmap.md`](docs/roadmap.md) | 里程碑与待办 |
 
