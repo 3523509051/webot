@@ -1,0 +1,37 @@
+# 敏感配置
+.env
+
+# 运行数据（含登录态、数据库）
+data/
+
+# 备份
+*.tar.gz
+backup-*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# 运行时产物（含群名/昵称/聊天里的表情图，不该进仓库）
+# ⚠️ 注意：.gitignore **不支持行尾注释** —— 注释必须单独一行，否则整行会被当成模式匹配不到
+bridge/config.json
+bridge/*.log
+bridge/*.log.*
+bridge/cache/
+logs/
+wechatauto_logs/
+
+# 微信数据库密钥缓存（正常情况下在 %TEMP%，兜底忽略）
+keys.json
+*keys*.json
+
+# 虚拟显示器驱动工具（Surface 部署不需要，可选上传）
+tools/vdd/
+Thumbs.db

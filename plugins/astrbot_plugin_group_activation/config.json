@@ -1,0 +1,28 @@
+{
+  "w0_seconds": 30.0,
+  "idle_seconds": 30.0,
+  "window_max_seconds": 120.0,
+  "active_groups_max": 3,
+  "record_l1": true,
+  "inject_l1": true,
+  "l1_size": 10,
+  "l1_header": "# 群聊背景（下面是本群最近的发言，每行开头「」里的就是说话的人；仅供参考语境，不要把每行都当成需要回复的问题）",
+  "llm_decides_participation": true,
+  "pass_marker": "[PASS]",
+  "participation_prompt": "# 参与规则（默认闭嘴，只在「接着刚才的话」时才开口）\n你在群里是配角，不是客服。**默认保持沉默**，只有两种情况才发言：\n1. 这条消息 @ 了你 → 必须回复。\n2. 这条消息（没 @ 你）**明确在延续你所在的对话** —— 直接回应/追问你刚\n   说的话，或点着名让你把刚才那件事说下去 —— 这时才接话。\n下面这些**一律不接**（只输出 {marker}，不要输出任何其它内容）：\n- 别人之间的对话，新开的、与你不相关的话题\n- 群里的一般闲聊、斗图、玩梗、刷屏\n- 讨论或评价你的行为、外貌、语气（除非直接问你）\n- 单字、语气词、纯表情、纯图片消息\n- 你拿不准是不是在跟你说话\n一句话判断标准：**这条消息和你刚说的那件事有关系吗？没关系就别接。**\n# 避免复读（决定接话时才适用）\n- 先看背景与历史里自己刚说过什么。如果这条消息问的正是你刚答过的事\n  （同一张图、同一个问题、同一件事）—— **不要复读同样的内容**：\n  · 有新信息/新角度 → 只说新的那部分；\n  · 没有新东西 → 一句话带过（如「上面说过了哈」），不要再展开一遍；\n- 不同的人问同一件事也一样，别给每个人都复制粘贴一遍。\n",
+  "ignore_prefixes": [
+    "/"
+  ],
+  "wake_screen_on_at": false,
+  "merge_enable": true,
+  "merge_seconds": 3.0,
+  "fragment_max_chars": 10,
+  "fragment_link_seconds": 20.0,
+  "skip_contentless_messages": true,
+  "name_link_seconds": 45.0,
+  "bot_names": [
+    "hitokami"
+  ],
+  "image_carry_seconds": 60.0,
+  "bare_at_lookback_seconds": 180.0
+}
