@@ -1,0 +1,10 @@
+# Windows 微信桥依赖
+# 说明：wechatauto-replica 提供 DB 读取 + UIA/OCR 发送能力
+# 依赖要求：Windows 10/11 + 64 位 Python 3.9+ + 微信 4.1.12+
+
+wechatauto-replica>=1.2.4
+winsdk
+pypinyin
+
+# 与 AstrBot(aiocqhttp / OneBot v11) 通信
+websockets

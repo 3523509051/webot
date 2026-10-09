@@ -1,0 +1,19 @@
+{
+  "astrbot": {
+    "ws_url": "ws://127.0.0.1:6199/ws",
+    "token": "",
+    "self_id": 10001,
+    "heartbeat_seconds": 15
+  },
+  "wechat": {
+    "bot_nickname": "群助手",
+    "poll_interval": 1.5,
+    "group_whitelist": [],
+    "groups": {},
+    "self_wxid": "",
+    "db_dir": ""
+  },
+  "logging": {
+    "level": "INFO"
+  }
+}
