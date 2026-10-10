@@ -46,7 +46,7 @@ from .kb import KBStore
 from .memory import LongTermMemory
 from .window import WindowManager
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
@@ -701,6 +701,62 @@ class GroupActivationPlugin(star.Star):
             return t
         return ""
 
+    # ── 1.8 历史图片剥离：L2 里的图不再重发 ─────────────
+    def _strip_history_images(self, req: ProviderRequest) -> int:
+        """把 L2 历史消息里的图片段换成文字占位，返回剥掉的图片数。
+
+        为什么必须剥（2026-10-10 实测，deepseek-flash）：
+          · 图片在会话历史里是 base64，**之后每一轮请求都会原样重发一遍**；
+          · 单张孤立测：按分辨率计费，一张 1280px 的图 ≈ 947 input token（与 base64
+            长度无关）；但在**真实的长上下文里更贵** —— 同一群同一份历史，剥图前后
+            实测 **69,823 → 24,832 input token（-64%）**，38 张图合计约 4.5 万 token
+            （≈1,184/张），占当时单轮输入的三分之二。
+          · 而且历史越长每轮越贵（实测 5.0 万 → 6.8 万，一小时涨 1.8 万）；
+            剥掉之后这条增长曲线直接归零。
+          · 副作用（实测）：框架会把改过的上下文回写会话库，所以库里的 base64 也会被
+            一并清掉（本次 DB 少了 3.9MB），图片不会再回流到历史。
+
+        剥掉之后什么会丢、什么不会：
+          · 不丢：所有**文字**（对方说的话、它当时对着图给出的回答）照旧在历史里；
+          · 不丢：**当轮新发的图** —— 它不在 req.contexts 里，走 req.image_urls，
+            由框架随后的 prepare_request_images 处理并真正送给多模态模型；
+          · 不丢：「先发图、紧接着追问」由 image_carry_seconds 把图补挂到追问那条上；
+          · 会丢：很久之后再说「再看看刚才那张图」时，模型手上没有原图（只剩 `[图片]`
+            占位与当时的文字描述）。
+        """
+        n = 0
+        for msg in req.contexts or []:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue          # 纯字符串正文的消息本来就没有图
+            kept: list = []
+            dropped = False
+            for part in content:
+                if isinstance(part, dict) and str(part.get("type")) == "image_url":
+                    n += 1
+                    dropped = True
+                    continue
+                kept.append(part)
+            if not dropped:
+                continue
+            # 这条消息的图被剥光后若一个字的正文都不剩，补个占位符：
+            # 模型仍看得出「当时有人发过图」，而不用为它付重发成本；
+            # 也避免出现 content 为空的消息（部分接口会直接 400）。
+            has_text = any(
+                isinstance(p, dict)
+                and p.get("type") == "text"
+                and str(p.get("text") or "").strip()
+                for p in kept
+            )
+            if not has_text:
+                kept.append(
+                    {"type": "text", "text": self.cfg.stripped_image_placeholder}
+                )
+            msg["content"] = kept
+        return n
+
     # ── 2. 记忆注入 ───────────────────────────────────
     @filter.on_llm_request()
     async def inject_memory(
@@ -710,6 +766,21 @@ class GroupActivationPlugin(star.Star):
         gid = event.get_group_id()
         if not gid:
             return
+        # L2 历史里的图片不再重发（见 _strip_history_images 的说明）。
+        # 放在窗口判定之前：只要这次 LLM 请求真的发生，这一步就该生效。
+        if self.cfg.strip_history_images:
+            try:
+                dropped = self._strip_history_images(req)
+                if dropped:
+                    logger.info(
+                        "[group_activation] 历史图片已剥离（群 %s，%d 张，本轮不再重发）",
+                        gid,
+                        dropped,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[group_activation] 剥离历史图片失败（群 %s）: %s", gid, e
+                )
         if not self.wm.is_active(gid):
             return
 
