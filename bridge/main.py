@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
 from onebot11 import OneBotClient
@@ -62,6 +63,7 @@ DEFAULT_CONFIG = {
         # 超过 image_max_bytes 的图片退化成 [图片] 占位文本，避免 WS 大帧传输失败。
         "send_images": True,
         "image_max_bytes": 3000000,
+        "image_max_edge": 1280,  # 限制像素边长，文件字节上限并不能控制视觉 token
         # 动画表情（表情包）当图片处理：从 XML 的 cdnurl 取原文件，动图只取第一帧
         "fetch_stickers": True,
     },
@@ -169,13 +171,14 @@ MEDIA_PLACEHOLDER = {
 # ⚠️ 教训（2026-10-09 实测踩到）：之前这里直接写 cfg["wechat"][...]，
 # 结果每收到一个表情包都抛 `name 'cfg' is not defined`，整条消息被外层
 # except 丢掉 → 群里表现就是「它不认识表情包」。
-MEDIA_OPTS: dict = {"fetch_stickers": True}
+MEDIA_OPTS: dict = {"fetch_stickers": True, "image_max_edge": 1280}
 
 
 def init_media_opts(cfg: dict) -> None:
     """把 main() 读到的配置同步给模块级媒体开关。"""
     wx_cfg = cfg.get("wechat") or {}
     MEDIA_OPTS["fetch_stickers"] = bool(wx_cfg.get("fetch_stickers", True))
+    MEDIA_OPTS["image_max_edge"] = int(wx_cfg.get("image_max_edge", 1280))
 
 # appmsg 的 <type> → 人类可读前缀（type 49「文件/链接/卡片」内部还分很多种）
 APPMSG_LABELS = {
@@ -316,18 +319,35 @@ def image_segment(path: str | None, max_bytes: int) -> list[dict] | None:
     if not path:
         return None
     try:
-        size = os.path.getsize(path)
-    except OSError as e:
-        log.warning("图片文件不可读 %s: %s", path, e)
-        return None
-    if size > max_bytes:
-        log.warning("图片过大（%d 字节 > 上限 %d），改为占位文本：%s", size, max_bytes, path)
-        return None
-    try:
         with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
+            payload = f.read()
+        max_edge = int(MEDIA_OPTS.get("image_max_edge", 1280))
+        if max_edge > 0:
+            from PIL import Image, ImageOps
+
+            with Image.open(BytesIO(payload)) as raw:
+                if max(raw.size) > max_edge:
+                    frame = ImageOps.exif_transpose(raw)
+                    frame.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                    if frame.mode != "RGB":
+                        rgb = Image.new("RGB", frame.size, "white")
+                        if frame.mode == "RGBA":
+                            rgb.paste(frame, mask=frame.getchannel("A"))
+                        else:
+                            rgb.paste(frame.convert("RGB"))
+                        frame = rgb
+                    with BytesIO() as output:
+                        frame.save(output, format="JPEG", quality=84, optimize=True)
+                        payload = output.getvalue()
+        if len(payload) > max_bytes:
+            log.warning("图片过大（%d 字节 > 上限 %d），改为占位文本：%s", len(payload), max_bytes, path)
+            return None
+        b64 = base64.b64encode(payload).decode("ascii")
     except OSError as e:
         log.warning("读取图片失败 %s: %s", path, e)
+        return None
+    except Exception as e:  # noqa: BLE001
+        log.warning("图片缩放失败 %s: %s", path, e)
         return None
     return [{"type": "image", "data": {"file": f"base64://{b64}"}}]
 

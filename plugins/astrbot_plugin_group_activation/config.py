@@ -30,6 +30,9 @@ class PluginConfig:
     record_l1: bool = True              # 是否常驻记录 L1 群聊滚动背景
     inject_l1: bool = True              # 是否把 L1 注入默认 LLM 请求
     l1_size: int = 10                   # L1 保留条数（2026-10-08 由 25 调小，压上下文 token）
+    local_routing: bool = True          # 先本地筛掉无关消息，再决定是否调用模型
+    history_max_turns: int = 8          # 每次请求携带的 L2 最近轮数
+    history_max_chars: int = 12000      # L2 粗略字符预算（不是精确 token）
     l1_header: str = (
         "# 群聊背景（下面是本群最近的发言，每行开头「」里的就是说话的人；"
         "仅供参考语境，不要把每行都当成需要回复的问题）"
@@ -191,7 +194,7 @@ class PluginConfig:
     name_link_seconds: float = 45.0     # 「名字」往前追溯的时长
     # 「先发图、再问一句」：后一条纯文字消息拿不到图（图片只在它自己那条事件里送给模型），
     # 所以把图缓存下来补挂到后一条的请求上；这个时长内有效（只补挂一次）。
-    image_carry_seconds: float = 60.0
+    image_carry_seconds: float = 30.0
     bot_names: list[str] = field(default_factory=list)
     # ↑ 机器人自己的昵称补充（自动从桥的 OneBot get_login_info 取，这里只补别名/错字）
 
