@@ -1,4 +1,4 @@
 name: astrbot_plugin_group_activation
 desc: 群聊 @ 开关式对话 —— @ 必回并打开滑动空闲窗口；窗口内由 LLM 自主决定是否接话；插件负责 L1 群聊记忆与注入
 author: webot
-version: 0.7.0
+version: 0.12.0

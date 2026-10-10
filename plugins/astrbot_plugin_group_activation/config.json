@@ -24,5 +24,7 @@
     "hitokami"
   ],
   "image_carry_seconds": 60.0,
+  "strip_history_images": true,
+  "stripped_image_placeholder": "[图片]",
   "bare_at_lookback_seconds": 180.0
 }

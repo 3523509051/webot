@@ -4,11 +4,13 @@
 在 AstrBot 容器里跑（那里有 openai SDK）。同一份贴近真实的上下文，四种组合各测一次。
 """
 import json
+import os
 import time
 
 from openai import OpenAI
 
-KEY = "sk-c3dc5444d058478aae9a49ab9e02b42e"
+# 密钥从环境变量读，不要写进仓库
+KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 BASE = "https://api.deepseek.com/v1"
 MODEL = "deepseek-flash"
 
