@@ -11,6 +11,7 @@
     "group_whitelist": [],
     "groups": {},
     "self_wxid": "",
+    "image_max_edge": 1280,
     "db_dir": ""
   },
   "logging": {

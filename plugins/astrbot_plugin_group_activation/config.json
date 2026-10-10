@@ -6,6 +6,9 @@
   "record_l1": true,
   "inject_l1": true,
   "l1_size": 10,
+  "local_routing": true,
+  "history_max_turns": 8,
+  "history_max_chars": 12000,
   "l1_header": "# 群聊背景（下面是本群最近的发言，每行开头「」里的就是说话的人；仅供参考语境，不要把每行都当成需要回复的问题）",
   "llm_decides_participation": true,
   "pass_marker": "[PASS]",
@@ -23,7 +26,7 @@
   "bot_names": [
     "hitokami"
   ],
-  "image_carry_seconds": 60.0,
+  "image_carry_seconds": 30.0,
   "strip_history_images": true,
   "stripped_image_placeholder": "[图片]",
   "bare_at_lookback_seconds": 180.0

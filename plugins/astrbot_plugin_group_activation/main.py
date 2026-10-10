@@ -44,6 +44,7 @@ from astrbot.core.star.filter.event_message_type import EventMessageType
 from .config import PluginConfig
 from .kb import KBStore
 from .memory import LongTermMemory
+from .routing import compact_contexts, should_consider_followup, wants_image
 from .window import WindowManager
 
 VERSION = "0.12.0"
@@ -174,6 +175,9 @@ class GroupActivationPlugin(star.Star):
         # 每群「机器人刚在跟谁说话」：gid -> (昵称, 时间)。回复真正发出后记（见
         # extend_after_reply），供 _linked_to_bot 判断名字对不对得上。
         self._last_bot_talk: dict[str, tuple[str, float]] = {}
+        # gid:sender_id -> 最近明确叫过机器人或收到机器人回复的时间。
+        # 使用稳定 ID，避免两个群友同名造成误接话。
+        self._directed_at: dict[str, float] = {}
         # 「先发图、再问这是什么」：key="群:发送者" -> (图片引用, 时间)。
         # 图片只在它自己那条事件里会送给模型，后一条纯文字消息得靠这里补挂（见 inject_memory）。
         self._last_image: dict[str, tuple[list[str], float]] = {}
@@ -315,8 +319,9 @@ class GroupActivationPlugin(star.Star):
                     self.cfg.w0_seconds,
                 )
             self.wm.activate(gid, now)
+            self._directed_at[frag_key] = now
         elif self.wm.is_active(gid, now):
-            self.wm.touch(gid, now)      # 窗口内：滑动续期
+            pass  # 群里无关闲聊不续窗口；真正接话时才 touch
         else:
             return                        # 窗口外且未被 @：只当记忆，不出声
 
@@ -345,6 +350,7 @@ class GroupActivationPlugin(star.Star):
             if mentioned:
                 # 这条 @ 了它 → 上面那一轮的回复必须回，并且开头 @ 回去
                 self._frag_mentioned[frag_key] = sender
+            self.wm.touch(gid, now)
             logger.info(
                 "[group_activation] 群 %s 碎片并入上一条（%s → %r，共 %d 段%s）",
                 gid,
@@ -353,6 +359,8 @@ class GroupActivationPlugin(star.Star):
                 len(lst) + 1,
                 "，含 @ 它" if mentioned else "",
             )
+            # 此条已并入上一条事件，不能再被框架作为单独的 @ 消息生成。
+            event.is_at_or_wake_command = False
             return
         # 等待窗口已过：上一轮**已经在生成、甚至已经发出**了，这条不能再吞掉
         # （吞了就永远没人答）。改为**放行** ——
@@ -396,6 +404,10 @@ class GroupActivationPlugin(star.Star):
                 or (self.cfg.skip_noise_messages and _is_noise(label))
             )
         ):
+            # 图片/表情包本身没有提问。先记住图，等同一个人明确询问时再附图。
+            if self.cfg.local_routing and self._image_refs(event):
+                logger.info("[group_activation] 群 %s 图片已记录，等待文字提问", gid)
+                return
             if self.cfg.skip_contentless_messages and not await self._linked_to_bot(
                 event, gid, sender, label, now
             ):
@@ -413,8 +425,18 @@ class GroupActivationPlugin(star.Star):
                 label[:20],
             )
 
+        # 只对刚刚直接与机器人交谈的发送者放行明显追问。否则让模型产出
+        # [PASS] 仍会产生一次完整的计费请求；本地过滤可以把它降为零次。
+        if self.cfg.local_routing and not mentioned and not late_frag:
+            linked = now - self._directed_at.get(frag_key, 0.0) <= self.cfg.name_link_seconds
+            if not should_consider_followup(text, linked=linked):
+                logger.info("[group_activation] 群 %s 本地略过非续话（%s）：%r", gid, sender, label[:40])
+                return
+
         # ⑤ 放行给默认 LLM —— 这就是"全部按默认处理"
         event.is_at_or_wake_command = True
+        event.set_extra("ga_admitted", True)
+        self.wm.touch(gid, now)
         # 被 @ 的那条：必须回；窗口内的普通消息：让 LLM 有权用 [PASS] 表示不参与
         event.set_extra("ga_mentioned", mentioned)
         if not mentioned:
@@ -426,7 +448,7 @@ class GroupActivationPlugin(star.Star):
         #   · 像碎片的短句（「这是你」→ 等「吗」）
         #   · 无内容消息（图片/表情包/标点）—— 「先发一张图，再问一句这是什么」
         #     是同一个动作，后一句必须并进这条（图只有这条事件里才有！）
-        if frag_like or _is_contentless(label):
+        if self.cfg.merge_enable and (frag_like or _is_contentless(label)):
             event.set_extra("ga_frag_key", frag_key)
             self._merge_until[frag_key] = now + self.cfg.merge_seconds
         logger.info(
@@ -781,8 +803,15 @@ class GroupActivationPlugin(star.Star):
                 logger.warning(
                     "[group_activation] 剥离历史图片失败（群 %s）: %s", gid, e
                 )
-        if not self.wm.is_active(gid):
+        # 已放行的请求即使排队到窗口关闭之后，仍应携带语境。
+        if not event.get_extra("ga_admitted", False):
             return
+
+        req.contexts = compact_contexts(
+            req.contexts or [],
+            max_turns=self.cfg.history_max_turns,
+            max_chars=self.cfg.history_max_chars,
+        )
 
         parts: list[str] = []
 
@@ -918,7 +947,11 @@ class GroupActivationPlugin(star.Star):
         #      有效性：本钩子跑在框架 image_input 之前（internal.py: OnLLMRequestEvent →
         #      prepare_request_images），所以写 req.image_urls 会被真正处理成输入。
         #      只补挂一次（补完就出队），避免这个人的每条消息都重复付费上图。
-        if not self._image_refs(event):
+        bare_at = bool(
+            event.get_extra("ga_mentioned", False)
+            and not re.sub(r"\[At:\d+\]", "", event.message_str or "").strip()
+        )
+        if not self._image_refs(event) and (wants_image(event.message_str or "") or bare_at):
             img_key = f"{gid}:{event.get_sender_id() or ''}"
             refs, its = self._last_image.get(img_key, ([], 0.0))
             if refs and time.time() - its <= self.cfg.image_carry_seconds:
@@ -966,7 +999,13 @@ class GroupActivationPlugin(star.Star):
             )
 
         if parts:
-            req.system_prompt = (req.system_prompt or "") + "\n\n" + "\n\n".join(parts)
+            # 变化的群聊背景放在当前用户消息后，并标为临时内容；稳定人格
+            # 不再因每条 L1 注入而变化，旧图片也不会进下一轮历史。
+            req.extra_user_content_parts.append({
+                "type": "text",
+                "text": "<webot_context>\n" + "\n\n".join(parts) + "\n</webot_context>",
+                "_no_save": True,
+            })
 
     # ── 2.5 @ 校正：回复里的 @ 只允许指向本条消息的发送者 ─────
     @filter.on_decorating_result()
@@ -1156,7 +1195,7 @@ class GroupActivationPlugin(star.Star):
         idle_seconds 来回应。
         """
         gid = event.get_group_id()
-        if not gid:
+        if not gid or not event.get_extra("ga_admitted", False):
             return
         # 记下「机器人刚在跟谁说话」—— 供无内容消息的名字判定（_linked_to_bot）：
         # 这个人接着甩个图片/表情包/标点，那是**给它的**，名字对得上就该回；
@@ -1164,6 +1203,9 @@ class GroupActivationPlugin(star.Star):
         talk_sender = (event.get_sender_name() or "").strip()
         if talk_sender:
             self._last_bot_talk[gid] = (talk_sender, time.time())
+        sender_id = str(event.get_sender_id() or "")
+        if sender_id:
+            self._directed_at[f"{gid}:{sender_id}"] = time.time()
         # 无论窗口当前开没开，都把「回复完成」当作一个活动点：
         #   · 还开着 → 续期（touch）
         #   · 已过期 → **重新打开**（activate）
