@@ -18,9 +18,7 @@
   ],
   "wake_screen_on_at": false,
   "merge_enable": true,
-  "merge_seconds": 3.0,
-  "fragment_max_chars": 10,
-  "fragment_link_seconds": 20.0,
+  "merge_seconds": 5.0,
   "skip_contentless_messages": true,
   "name_link_seconds": 45.0,
   "bot_names": [
@@ -29,5 +27,6 @@
   "image_carry_seconds": 30.0,
   "strip_history_images": true,
   "stripped_image_placeholder": "[图片]",
-  "bare_at_lookback_seconds": 180.0
+  "bare_at_lookback_seconds": 180.0,
+  "merge_max_seconds": 30.0
 }
