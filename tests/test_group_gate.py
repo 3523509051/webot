@@ -17,7 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def plugin_with_fake_astrbot(tmp: str):
+def plugin_with_fake_astrbot(tmp: str, *, return_module=False):
     passthrough = lambda *a, **k: lambda fn: fn
     modules = {name: types.ModuleType(name) for name in (
         "astrbot", "astrbot.api", "astrbot.api.event", "astrbot.api.provider",
@@ -41,7 +41,8 @@ def plugin_with_fake_astrbot(tmp: str):
         try:
             name = "plugins.astrbot_plugin_group_activation.main"
             sys.modules.pop(name, None)
-            return importlib.import_module(name).GroupActivationPlugin
+            module = importlib.import_module(name)
+            return (module.GroupActivationPlugin, module) if return_module else module.GroupActivationPlugin
         finally:
             sys.path.remove(str(ROOT))
 

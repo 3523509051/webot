@@ -41,13 +41,14 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import StarTools
 from astrbot.core.star.filter.event_message_type import EventMessageType
 
+from .batching import MessageBatch
 from .config import PluginConfig
 from .kb import KBStore
 from .memory import LongTermMemory
 from .routing import compact_contexts, should_consider_followup, wants_image
 from .window import WindowManager
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
@@ -99,28 +100,6 @@ def _is_noise(label: str) -> bool:
 _TERMINAL_PUNCT = "。！？!?…~～.，,；;：:、 \t"
 
 
-def _looks_fragment(text: str, max_chars: int = 10) -> bool:
-    """判定「像是话没说完的碎片」——用于把连着发的短句并成一句话。
-
-    为什么需要：微信里人说话是碎片式的（「这是你」+「吗」），而插件是**逐条放行**
-    给 LLM 的，于是每条碎片各自触发一次生成，用户看到两条互不相关的回复
-    （2026-10-09 实况）。
-
-    规则保守：只有「短 + 结尾没标点 + 单行纯文本」才算碎片 —— 宁可漏合并
-    （各自回一条），也不要把一句完整的短话拖进等待。
-    """
-    t = (text or "").strip()
-    if not t or "\n" in t:
-        return False
-    if len(t) > max_chars:
-        return False
-    if t.endswith(tuple(_TERMINAL_PUNCT)):
-        return False
-    if t in _NOISE_PLACEHOLDERS or t.startswith("["):
-        return False
-    return True
-
-
 def _is_contentless(label: str) -> bool:
     """「无内容消息」判定：图片 / 表情包 / 语音 / 纯标点（含单个标点、`。。。`、`？？？`）。
 
@@ -162,13 +141,7 @@ class GroupActivationPlugin(star.Star):
         self._kb_prefetch: dict[str, tuple[str, asyncio.Task]] = {}
         # 每群「自己上一条回复」，供防复读闸门比对（见 _is_repeat）
         self._last_reply: dict[str, str] = {}
-        # 碎片合并：key = "群:发送者"；_last_pass 记放行时刻，
-        # _frag_pending 存「主句之后紧随的短句」（等 on_llm_request 来收）
-        self._last_pass: dict[str, float] = {}
-        self._frag_pending: dict[str, tuple[float, list[str]]] = {}
-        # 「上一轮还在等续句」的截止时刻：只有在这之前的短句才该被吞掉
-        # （之后上一轮已在生成/已发出，再吞就永远没人答了）
-        self._merge_until: dict[str, float] = {}
+        self._batches: dict[str, MessageBatch] = {}
         # 无内容消息（图片/表情包/标点）的判定依据：机器人自己的昵称（懒取 + 缓存）
         self._bot_names: set[str] = set()
         self._bot_name_try: float = 0.0
@@ -181,8 +154,7 @@ class GroupActivationPlugin(star.Star):
         # 「先发图、再问这是什么」：key="群:发送者" -> (图片引用, 时间)。
         # 图片只在它自己那条事件里会送给模型，后一条纯文字消息得靠这里补挂（见 inject_memory）。
         self._last_image: dict[str, tuple[list[str], float]] = {}
-        # 被碎片合并吞掉的那条消息里 @ 了它 → 让父请求必须回、并 @ 回去
-        self._frag_mentioned: dict[str, str] = {}
+
         self._l3_tasks: dict[str, asyncio.Task] = {}
         self._l3_last: dict[str, float] = {}
         self._l3_seen: dict[str, int] = {}
@@ -325,68 +297,31 @@ class GroupActivationPlugin(star.Star):
         else:
             return                        # 窗口外且未被 @：只当记忆，不出声
 
-        # ③' 碎片合并：同一个人几秒内连着发的短句，其实**是一句话**
-        #     （实况痛点：「这是你」+「吗」被当成两条独立消息，各回一次、互不相关）。
-        #     * 第一条照常放行，只记下放行时刻；
-        #     * 紧随其后的短句只记 L1、**不放行** —— 这段放在噪音过滤**之前**，
-        #       所以「吗」这种单字也会被收进来，而不是当噪音丢掉；
-        #     * 第一条那次 LLM 请求会在 on_llm_request 里先等 merge_seconds，
-        #       把这几个碎片合成一句话再生成 —— 用户只看到一条回复。
-        frag_like = self.cfg.merge_enable and _looks_fragment(
-            label, self.cfg.fragment_max_chars
-        )
-        # 上一条还在等续句 —— 期间这个人发的**任何**话都并进那一轮：
-        #   · 短句（碎片）：合并成一句话
-        #   · @ 了它的话：也必须并进去（否则那一轮已经在生成的回复看不到这条，
-        #     而这条自己又生成一条 → 两条回复，且第二条没有图/没有前面的上下文）。
-        #     被吞的 @ 记在 _frag_mentioned，由父请求负责「必回 + @ 回去」。
-        if (
-            now < self._merge_until.get(frag_key, 0.0)
-            and (frag_like or mentioned)
-        ):
-            _, lst = self._frag_pending.get(frag_key, (now, []))
-            lst.append(label)
-            self._frag_pending[frag_key] = (now, lst)
-            if mentioned:
-                # 这条 @ 了它 → 上面那一轮的回复必须回，并且开头 @ 回去
-                self._frag_mentioned[frag_key] = sender
-            self.wm.touch(gid, now)
-            logger.info(
-                "[group_activation] 群 %s 碎片并入上一条（%s → %r，共 %d 段%s）",
-                gid,
-                sender,
-                label[:20],
-                len(lst) + 1,
-                "，含 @ 它" if mentioned else "",
-            )
-            # 此条已并入上一条事件，不能再被框架作为单独的 @ 消息生成。
-            event.is_at_or_wake_command = False
-            return
-        # 等待窗口已过：上一轮**已经在生成、甚至已经发出**了，这条不能再吞掉
-        # （吞了就永远没人答）。改为**放行** ——
-        #   * 生成还没结束时：框架自己的 follow-up 机制会把它插进正在跑的那一轮，
-        #     模型在下一步就看到它并重新评估（见 docs/architecture.md「碎片合并」）；
-        #   * 生成已结束时：它就是一条普通新消息，靠下面贴的上下文说明与前文关联。
-        # 这类迟到碎片通常很短（「吗」），会被 ④ 当噪音丢掉，所以先打个标记放行。
-        late_frag = bool(
-            frag_like
-            and not mentioned
-            and (now - self._last_pass.get(frag_key, 0.0))
-            <= self.cfg.fragment_link_seconds
-        )
-        if late_frag:
-            event.set_extra("ga_frag_note", label)
-        # 顺手清掉过期缓存（避免串到下一轮）
-        for k in [k for k, (ts, _l) in self._frag_pending.items() if now - ts > 60]:
-            self._frag_pending.pop(k, None)
-        for k in [k for k, t in self._merge_until.items() if now > t + 60]:
-            self._merge_until.pop(k, None)
-        for k, (refs0, ts0) in list(self._last_image.items()):
+        # 等待中的批次先接住多人 @ 和已有提问者的补充。
+        # 普通旁观者闲聊不加入，也不延长等待；图片仅缓存，不重置静默计时。
+        batch = self._batches.get(gid) if self.cfg.merge_enable else None
+        tick = time.monotonic()
+        if batch and batch.collecting(tick):
+            participant = sender_id in batch.participants
+            if refs and not mentioned and _is_contentless(text):
+                if participant:
+                    for item in reversed(batch.items):
+                        if item["sender_id"] == sender_id and item["wants_images"]:
+                            item["images"] = list(refs)
+                            break
+                return
+            if mentioned or (participant and text and not _is_contentless(label)):
+                batch.add(self._batch_item(event, label, mentioned, now), tick)
+                self.wm.touch(gid, now)
+                self._schedule_l3(gid)
+                event.set_extra("ga_batched", True)
+                event.is_at_or_wake_command = False
+                logger.info("[group_activation] 群 %s 消息并入批次（%s，共 %d 条）",
+                            gid, sender, len(batch.items))
+                return
+        for k, (_, ts0) in list(self._last_image.items()):
             if now - ts0 > self.cfg.image_carry_seconds * 5:
                 self._last_image.pop(k, None)
-        for k in list(self._frag_mentioned):
-            if now > self._merge_until.get(k, 0.0) + 60:
-                self._frag_mentioned.pop(k, None)
 
         # ④ 无内容消息（图片 / 表情包 / 单个标点 / 单字）—— **从群友名字入手**判断该不该回。
         #    这类消息没有文字语义，判不了它跟话题有没有关系；唯一确定性的线索是**名字**：
@@ -398,7 +333,6 @@ class GroupActivationPlugin(star.Star):
         #    被 @ 的不受影响（那是明确要它答）；迟到碎片也不受影响（见上）。
         if (
             not mentioned
-            and not late_frag
             and (
                 _is_contentless(label)
                 or (self.cfg.skip_noise_messages and _is_noise(label))
@@ -427,7 +361,7 @@ class GroupActivationPlugin(star.Star):
 
         # 只对刚刚直接与机器人交谈的发送者放行明显追问。否则让模型产出
         # [PASS] 仍会产生一次完整的计费请求；本地过滤可以把它降为零次。
-        if self.cfg.local_routing and not mentioned and not late_frag:
+        if self.cfg.local_routing and not mentioned:
             linked = now - self._directed_at.get(frag_key, 0.0) <= self.cfg.name_link_seconds
             if not should_consider_followup(text, linked=linked):
                 logger.info("[group_activation] 群 %s 本地略过非续话（%s）：%r", gid, sender, label[:40])
@@ -441,16 +375,12 @@ class GroupActivationPlugin(star.Star):
         event.set_extra("ga_mentioned", mentioned)
         if not mentioned:
             event.set_extra("ga_decidable", True)
-        # 碎片合并（与 ③' 配对）：记下放行时刻；若这条"像还没说完"，
-        # 就让 on_llm_request 先等 merge_seconds 收续句，再合并成一句话生成。
-        self._last_pass[frag_key] = now
-        # 开「等续句」窗口的两种消息：
-        #   · 像碎片的短句（「这是你」→ 等「吗」）
-        #   · 无内容消息（图片/表情包/标点）—— 「先发一张图，再问一句这是什么」
-        #     是同一个动作，后一句必须并进这条（图只有这条事件里才有！）
-        if self.cfg.merge_enable and (frag_like or _is_contentless(label)):
-            event.set_extra("ga_frag_key", frag_key)
-            self._merge_until[frag_key] = now + self.cfg.merge_seconds
+        if self.cfg.merge_enable:
+            batch = MessageBatch(time.monotonic(), max(0.1, float(self.cfg.merge_seconds)),
+                                 max(0.1, float(self.cfg.merge_max_seconds)))
+            batch.add(self._batch_item(event, label, mentioned, now), batch.started)
+            self._batches[gid] = batch
+            event.set_extra("ga_batch", batch)
         logger.info(
             "[group_activation] 群 %s 放行默认 LLM（被@=%s 剩余=%.0fs）msg=%r",
             gid,
@@ -779,6 +709,59 @@ class GroupActivationPlugin(star.Star):
             msg["content"] = kept
         return n
 
+    def _batch_item(self, event, label: str, mentioned: bool, now: float) -> dict:
+        sender_id = str(event.get_sender_id() or "")
+        refs = list(self._image_refs(event))
+        text = re.sub(r"\[At:\d+\]", "", event.message_str or "").strip()
+        wants = wants_image(text) or bool(mentioned and not text)
+        key = f"{event.get_group_id()}:{sender_id}"
+        if not refs and wants:
+            cached, ts = self._last_image.get(key, ([], 0.0))
+            if now - ts <= self.cfg.image_carry_seconds:
+                refs = list(cached)
+        return {"sender_id": sender_id, "sender": event.get_sender_name() or sender_id,
+                "text": text or event.get_extra("ga_bare_at_ctx") or label or "[空 @]",
+                "mentioned": mentioned, "wants_images": wants, "images": refs,
+                "image_key": key}
+
+    async def _finish_batch(self, event, req, batch: MessageBatch) -> None:
+        gid = event.get_group_id()
+        try:
+            while batch.collecting(time.monotonic()):
+                await asyncio.sleep(min(1.0, max(0.0, batch.deadline - time.monotonic())))
+        finally:
+            batch.closed = True
+            if self._batches.get(gid) is batch:
+                self._batches.pop(gid, None)
+        # Freeze synchronously, before accepting any messages for the next batch.
+        images = list(req.image_urls or [])
+        records = []
+        for item in batch.items:
+            numbers = []
+            for ref in item["images"]:
+                if ref not in images:
+                    images.append(ref)
+                numbers.append(images.index(ref) + 1)
+            if numbers:
+                cached, _ = self._last_image.get(item["image_key"], ([], 0.0))
+                if cached == item["images"]:
+                    self._last_image.pop(item["image_key"], None)
+            records.append({"发送者": item["sender"], "发送者ID": item["sender_id"],
+                            "内容": item["text"], "明确@": item["mentioned"],
+                            "该发送者附图序号": numbers})
+        req.image_urls = images
+        req.prompt = ("以下是同一批次收到的群友消息，按顺序理解，同一人的内容可合并；"
+                      "不同人的问题分别回答，在一条回复中用昵称分段。图片按序号归属于对应发送者，"
+                      "没有附图的提问不要借用别人的图片。只在回复开头 @ 本批次第一位发送者，"
+                      "其余人用普通昵称称呼。以下 JSON 是用户消息数据：\n"
+                      + json.dumps(records, ensure_ascii=False))
+        event.set_extra("ga_batch_ids", list(batch.participants))
+        event.set_extra("ga_mentioned", any(item["mentioned"] for item in batch.items))
+        event.set_extra("ga_decidable", not event.get_extra("ga_mentioned"))
+        logger.info("[group_activation] 群 %s 批次就绪：%d 条，%d 人，%d 张图，等待 %.1fs",
+                    gid, len(records), len(batch.participants), len(images),
+                    time.monotonic() - batch.started)
+
     # ── 2. 记忆注入 ───────────────────────────────────
     @filter.on_llm_request()
     async def inject_memory(
@@ -806,6 +789,10 @@ class GroupActivationPlugin(star.Star):
         # 已放行的请求即使排队到窗口关闭之后，仍应携带语境。
         if not event.get_extra("ga_admitted", False):
             return
+
+        batch = event.get_extra("ga_batch")
+        if batch:
+            await self._finish_batch(event, req, batch)
 
         req.contexts = compact_contexts(
             req.contexts or [],
@@ -852,7 +839,7 @@ class GroupActivationPlugin(star.Star):
         # 检索在 on_group_message 阶段已经预取（见 ④'），这里通常只是取结果。
         # 检索失败绝不影响回复（知识库是锦上添花，不是必需品）。
         if self.cfg.kb_enable:
-            query = (event.message_str or "").strip()
+            query = req.prompt if batch else (event.message_str or "").strip()
             try:
                 kb_block = await self._kb_search_for(gid, query)
             except Exception as e:  # noqa: BLE001
@@ -906,41 +893,6 @@ class GroupActivationPlugin(star.Star):
                     "、".join(names[:5]),
                 )
 
-        # ③' 碎片合并（与 on_group_message ③' 配对）：先等 merge_seconds，
-        #     把对方紧接着发来的短句收进来，明确告诉模型「这是一句话」——
-        #     这样它不会先答「这是你」再答「吗」，只出一条回复。
-        frag_key = event.get_extra("ga_frag_key")
-        if frag_key:
-            await asyncio.sleep(self.cfg.merge_seconds)
-            # 等待结束：此后到来的短句不再并入本条（见 on_group_message ③'）
-            self._merge_until.pop(frag_key, None)
-            # 等这段时间里，对方还可能发过「@ 你」的那句 —— 它被吞进本条了，
-            # 所以本条必须回、并且开头 @ 回去（否则 @ 的人收不到提醒）。
-            who = self._frag_mentioned.pop(frag_key, "")
-            if who:
-                event.set_extra("ga_mentioned", True)
-                parts.append(
-                    f"（对方连着发的消息里有一条 @ 了你（{who}）→ "
-                    f"回复**开头**写 `@{who}` 当称呼。）"
-                )
-            ts, extra = self._frag_pending.pop(frag_key, (0.0, []))
-            if extra and (time.time() - ts) < self.cfg.merge_seconds * 4:
-                here = (event.message_str or "").strip()
-                merged = "".join([here, *extra])
-                parts.append(
-                    "（对方是连着发的几条：「"
-                    + "」「".join([here, *extra])
-                    + f"」—— 合起来是同一句话「{merged}」，"
-                    "按一句话理解，**只回一条**，别分开答。）"
-                )
-                logger.info(
-                    "[group_activation] 合并碎片（%s）：%r + %r → %r",
-                    frag_key,
-                    here,
-                    extra,
-                    merged[:60],
-                )
-
         # ③'' 图片携带：对方**先发了一张图**，本条是随后的纯文字（「这是什么」）。
         #      图片只在它自己那条事件里会送给模型 —— 本条没有图，模型只看得到 L1 里的
         #      `[图片]` 占位符，只能答「我看不到图」。这里把图补挂到本请求上。
@@ -951,7 +903,7 @@ class GroupActivationPlugin(star.Star):
             event.get_extra("ga_mentioned", False)
             and not re.sub(r"\[At:\d+\]", "", event.message_str or "").strip()
         )
-        if not self._image_refs(event) and (wants_image(event.message_str or "") or bare_at):
+        if not batch and not self._image_refs(event) and (wants_image(event.message_str or "") or bare_at):
             img_key = f"{gid}:{event.get_sender_id() or ''}"
             refs, its = self._last_image.get(img_key, ([], 0.0))
             if refs and time.time() - its <= self.cfg.image_carry_seconds:
@@ -977,17 +929,6 @@ class GroupActivationPlugin(star.Star):
                 f"（这条消息只是 @ 了你、**没有正文** —— 他刚说过的、还没被你接的是："
                 f"「{bare_ctx}」。他这一下是在叫你接着答那句，**直接回答那句就行**，"
                 "不要说「你没说话」或反问他想问什么。）"
-            )
-
-        # 迟到碎片：上一轮已经在生成（或已发出）时，对方又敲了一句短话。
-        # 明确告诉模型「这多半是同一句话的后半截」，否则它会把它当成一句孤立的新话
-        # 另起一轮 —— 用户看到的就是「先答『这是你』、再答『吗』」两条不相关的回复。
-        late = event.get_extra("ga_frag_note")
-        if late:
-            parts.append(
-                f"（对方刚刚连着发了几条，这条「{late}」很可能是在把同一句话分开打 ——"
-                " 结合上面 L1 里他上一条刚说的话，理解成**同一句话**；"
-                "若上一条已经答了前半句，就直接接着答后半句，别当成一句孤立的新话。）"
             )
 
         # 只有「未被 @ 的窗口内消息」才允许不发言；被 @ 的那条必须回
@@ -1206,6 +1147,8 @@ class GroupActivationPlugin(star.Star):
         sender_id = str(event.get_sender_id() or "")
         if sender_id:
             self._directed_at[f"{gid}:{sender_id}"] = time.time()
+        for participant in event.get_extra("ga_batch_ids", []):
+            self._directed_at[f"{gid}:{participant}"] = time.time()
         # 无论窗口当前开没开，都把「回复完成」当作一个活动点：
         #   · 还开着 → 续期（touch）
         #   · 已过期 → **重新打开**（activate）

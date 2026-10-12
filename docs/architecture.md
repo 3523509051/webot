@@ -286,19 +286,15 @@
 3. record_l1=True → 写入 L1（user / text / ts / at）
 4. mentioned = event.is_at_or_wake_command
       ├─ True  → 若窗口未激活：检查并发上限（active_groups_max=3），然后 activate
-      ├─ 窗口内 → touch（滑动续期）
+      ├─ 窗口内 → 本地筛选，通过后才 touch（滑动续期）
       └─ 否则   → return（只当记忆，不出声）
-5. 碎片合并（见 §5.6）：
-     上一条还在等续句（now < _merge_until[key]）且本条"像碎片" → 只记 L1、**不放行**
-     （append 进 _frag_pending，等那条 LLM 请求来收）
-     否则若是「迟到碎片」→ 贴 ga_frag_note 并**跳过噪音过滤**放行
-6. 无内容消息（图片 / 表情包 / 单个标点 / 单字，见 §5.7）：
-     **从群友名字入手** —— 名字对得上（最近点过它的名 / 它刚在跟这人说话）→ 放行；
-     对不上 → 只记 L1、不放行
-7. event.is_at_or_wake_command = True   ← 放行默认 LLM
-   event.set_extra("ga_mentioned", mentioned)
-   未被 @ 时额外置 ga_decidable=True     ← 允许 LLM 用 [PASS] 表示「不参与」
-   本条"像碎片" → 置 ga_frag_key 并开 _merge_until 窗口（请求侧先等 merge_seconds）
+5. 多人提问合并（见 §5.6）：等待中的批次接住新的 @ 和已有提问者的补充。
+   后续消息置 is_at_or_wake_command=False，不独立调用模型。
+   单发图片只缓存，不重置计时；旁观者普通闲聊只进入 L1。
+6. 未命中批次的无内容消息/非续话按本地路由过滤。
+7. 首条放行事件置 ga_admitted=True；开启本地批次。
+   on_llm_request 每秒检查：静默5秒或首条起30秒即冻结批次，合并问题及图片，
+   注入一次记忆，然后交给默认 LLM。批次派发后新提问进入新批次。
 ```
 
 ### 5.2 窗口状态机（`window.py`，每群一份）
@@ -376,43 +372,26 @@ LLM 输出恰为 [PASS] 时：
 
 > 顶层 `wake_prefix = ["/"]`，所以在群里单发 `/gaw` 即可触发。
 
-### 5.6 碎片合并：把「这是你」+「吗」当成**一句话**（v0.8.0+）
+### 5.6 多人提问合并（v0.13.0）
 
-**问题**：人打字是碎片式的（「这是你」→「吗」），而插件对窗口内消息是**逐条放行**的，
-于是每条碎片各自触发一次生成 → 用户看到两条互不相关、各自答半句的回复
-（2026-10-09 实况：机器人先答「这是你」，再答「吗」）。
+每群维护一个正在收集的本地 `MessageBatch`，首条放行事件拥有该批次。
+新的明确 @ 可以跨发送者加入；参与提问的人可以补充任意长度的有内容文本。
+其他人的普通闲聊不加入、不续计时。命令仍走命令管线，不进入批次。
 
-**做法（三层，按消息到达的时机分）**：
+派发时间为 `min(首条时间 + 30秒, 最后一条相关文本时间 + 5秒)`。
+`on_llm_request` 每秒检查一次，等待期间不调用模型；先冻结批次，再构建带发送者
+ID/昵称/问题/附图序号的统一 prompt，随后仅注入一次 L1/L3/L4。
+批次采用单调时钟，硬上限不会因群友持续补充而延长。取消等待会清理所属批次；
+新批次不会被旧请求清理掉。
 
-| 时机 | 机制 | 结果 |
-|---|---|---|
-| 上一条**还在等续句**（`now < _merge_until[key]`，默认 3 秒） | 碎片只记 L1、不放行，append 进 `_frag_pending`；那条 LLM 请求在 `on_llm_request` 里先 `await sleep(merge_seconds)` 收续句 | 合成一句话 → **一条**回复 |
-| 上一条**已经在生成/已发出**（窗口已过） | 不吞，放行 → 命中 **AstrBot 自带的 follow-up 机制**：同群 + 同一个人 + 有活跃 `AgentRunner` 时，新消息被 `runner.follow_up(text)` 捕获，下一步注入 `[SYSTEM NOTICE] User sent follow-up messages…` | 模型**看到新消息并重新评估**（同一条回复里纳入） |
-| 上一条**已发出**（就是一条新消息了） | 插件贴 `ga_frag_note`：明确告诉模型「这是在把同一句话分开打，结合 L1 里他上一条理解」 | 第二条也知道自己在接哪句，不再当成孤立新话 |
+图片按发送者关联。纯图片不会续静默计时；提问者先问图、随后在等待期间发图时，
+该图片可补到本人的问图记录。不同人的图片不互借，补挂后清理已使用缓存。
+统一回复按昵称分段，微信真实 @ 仍只提醒批次首位发送者。
 
-关键点是**只吞窗口内的**：`_merge_until` 一旦到期（那条请求已经 `await` 完、开始生成），
-后续短句一律放行 —— 否则会出现「吞掉了但那一轮已经不在监听，永远没人答」。
-
-**框架侧依据**（AstrBot 源码，容器内 `/AstrBot/astrbot/core/`）：
-
-- `pipeline/process_stage/follow_up.py` → `try_capture_follow_up()`：要求同 `umo`、**同 sender**、
-  该会话有活跃 runner；`runner.follow_up()` 产出 `FollowUpTicket`。
-- `agent/runners/tool_loop_agent_runner.py` → `FOLLOW_UP_NOTICE_TEMPLATE`
-  （写明「User sent follow-up messages while tool execution was in progress」）。
-- 因此本机（回复走 `process_stage/method/agent_request.py` → `agent_sub_stages/internal.py`）
-  **天然具备**「生成中插话 → 重新评估」的能力，插件只要**别把消息吞掉**即可。
-
-**没做的更激进方案（留档）**：新消息到达时**掐掉未发出的旧回复、用最新上下文重新生成一条**。
-框架留了口子 —— `astr_agent_run_util._watch_agent_stop_signal` 每 0.5s 检查
-`event.is_stopped()` / `agent_stop_requested` 并 `request_stop()`；`result_decorate/stage.py`
-也明确支持插件清空 `result.chain` 让消息不发送；`utils/active_event_registry.stop_all(umo)` 可终止
-该会话活跃事件。**未采纳原因**：会丢回复（新消息若被 `[PASS]`，用户就什么都收不到）、
-延迟翻倍、且要 import 框架内部模块（升级易碎）。需要时再说。
-
-参数：`merge_enable` / `merge_seconds`(3) / `fragment_max_chars`(10) / `fragment_link_seconds`(20)，
-见 §6.3。「像碎片」的判定：短（≤10 字）、**结尾无标点**、单行、非纯占位符（`_looks_fragment`）。
-
-日志：`碎片并入上一条（…共 N 段）`、`合并碎片（群:发送者）：… → 合成文本`。
+每批只放行一个**初始**请求。工具往返、失败重试、休眠后的 L3 提炼可能额外调用模型。
+派发后到来的消息按正常路由进入下一批，不能追加进已经发出的 HTTP 请求。
+配置：`merge_enable=true`、`merge_seconds=5`、`merge_max_seconds=30`。
+日志：`消息并入批次`、`批次就绪：N 条，M 人，K 张图，等待 Xs`。
 
 ### 5.7 无内容消息：**从群友名字入手**（v0.9.0）
 
@@ -445,36 +424,15 @@ LLM 输出恰为 [PASS] 时：
 
 配置：`skip_contentless_messages`(true) / `name_link_seconds`(45) / `bot_names`([])，见 §6.3。
 
-### 5.8 「先发一张图，再问一句这是什么」= **一轮**（v0.10.0）
+### 5.8 先发图，再问图（v0.13.0）
 
-`on_llm_request` 的钩子跑在框架 `prepare_request_images` **之前**
-（`agent_sub_stages/internal.py`：`call_event_hook(OnLLMRequestEvent)` → `prepare_request_images`），
-所以插件可以在这里给请求补挂图片。这条路修掉两个真问题：
+图片首先记入 L1 占位及按发送者隔离的缓存，不单独调用模型。
+同一人在 `image_carry_seconds=30` 秒内明确问图或空 @ 时，缓存引用进入批次。
+批次等待结束后给 `req.image_urls` 补挂图片，注明每张图对应的发送者；
+缓存有效期按消息加入批次时判断，避免5–30秒等待把已经收下的图丢掉。
+直接 @ 发图也进入批次，当前图片仍由框架处理，不被历史剥图影响。
+若没有后续问题，图片保持占位，不触发视觉请求。
 
-1. **图片与随后的问题算一轮**：放行时若本条是**无内容消息**（图片/表情包/标点），
-   也开 `merge_seconds`（3s）等待窗口 → 随后那句并进这一轮 →
-   `ga_frag_key` / `_frag_pending` → 注入「连着发的几条」说明。**只出一条回复**，
-   且模型同时拿到图和问题（图片只有它自己那条事件里才有）。
-2. **后一条也要能看到图**：若图片那条**没有被放行**（名字对不上，只记了 L1），
-   图仍会缓存 `image_carry_seconds`(60s)；这个人下一条纯文字消息进来时，
-   插件把图**补挂到该请求**（`req.image_urls += 缓存`）并附一句
-   「他刚发过一张图，已随本条一起给出」→ 模型能答「这是什么」。只补挂一次（补完出队），
-   避免这个人的每条消息都重复付费上图。
-
-**等待窗口内 @ 了它**（`@它 这是什么` 紧跟在图后面）：这条也会被并进上一轮
-（否则那一轮已经在生成的回复看不到它，而它自己又生成一条 → 两条回复）。
-被吞的 @ 记在 `_frag_mentioned[key]`，父请求据此**必回**并在开头 **@ 回去**
-（`inject_memory` 里 `set_extra("ga_mentioned", True)` + 注入称呼说明，
-后续 `fix_mentions` 的兜底补 @ 因此生效）。
-
-| 场景 | 结果 |
-|---|---|
-| 图（名字对得上）+ 3 秒内「这是什么」 | **1 条回复**，带图 + 带问题（等 3 秒后生成） |
-| 图（名字对不上，不回）+ 60 秒内「这是什么」 | **1 条回复**，图被补挂到这条请求上 |
-| 图 + 3 秒内「@它 这是什么」 | **1 条回复**，带图、必回、开头 @ 你 |
-| 图之后再无下文 | 名字对得上 → 1 条回复（等 3 秒）；对不上 → 不回（只记 L1） |
-
-配置：`image_carry_seconds`(60)。
 
 ---
 
@@ -526,14 +484,13 @@ LLM 输出恰为 [PASS] 时：
 | `l3_min_new_messages` / `l3_cooldown_seconds` | 5 / 300（提炼的两道闸门） |
 | `l3_max_members` / `l3_max_facts_per_member` | 8 / 4（注入上限） |
 | `l3_facts_cap_per_member` | 12（存储上限，超出丢最久未提及的） |
-| `merge_enable` | `true`（碎片合并，见 §5.6） |
-| `merge_seconds` | 3.0（上一条请求等续句的时长；太长会让正常短句变慢） |
-| `fragment_max_chars` | 10（多短 + 无尾标点才算「像碎片」） |
-| `fragment_link_seconds` | 20.0（生成已开始后，多久内还算「同一句话的后半截」） |
+| `merge_enable` | `true`（多人提问合并，见 §5.6） |
+| `merge_seconds` | 5.0（相关文本静默时长） |
+| `merge_max_seconds` | 30.0（从批次首条起的硬上限） |
 | `skip_contentless_messages` | `true`（图片/表情包/单个标点：名字对不上就不回，见 §5.7） |
 | `name_link_seconds` | 45.0（「名字」往前追溯的时长：他刚 @ 过它 / 他刚被它回过） |
 | `bot_names` | `[]`（机器人昵称补充；主名字自动取桥的 `get_login_info`） |
-| `image_carry_seconds` | 60.0（先发图、后问一句：图能"随"到后一条请求上的时长，见 §5.8） |
+| `image_carry_seconds` | 30.0（先发图、后问一句：图能"随"到后一条请求上的时长，见 §5.8） |
 | `ignore_prefixes` | `["/"]` |
 
 > ⚠️ **`config.json` 会覆盖 `config.py` 里的默认值。**
