@@ -51,9 +51,18 @@ def search_intent(text: str) -> bool | None:
         return False
     if re.search(r"(?:搜索|联网|search)(?:是什么意思|是什么|怎么用|功能)|(?:能|会|可以)(?:联网)?(?:搜索|search)(?:吗|么)[?？。]*$", t, re.I):
         return None
-    if re.search(r"(?:上网|联网|网上|百度)(?:.{0,5})(?:搜|查|找)|(?:帮我|请|麻烦你|给我|再|继续)\s*(?:搜|search)|^(?:我想|我要|你)?\s*(?:搜索|搜一下|搜搜|search\b|look\s+up\b)|百度一下", t, re.I):
+    if re.search(r"(?:上网|联网|网上|百度)(?:.{0,5})(?:搜|查|找)|(?:帮我|请|麻烦你|给我|再|继续)\s*(?:搜|search)|^(?:我想|我要|你)?\s*(?:直接\s*)?(?:搜索|搜一下|搜搜|搜(?:[，。！？!?\s]|$)|search\b|look\s+up\b)|百度一下", t, re.I):
         return True
     return None
+
+
+def is_weather_request(text: str) -> bool:
+    t = re.sub(r'「[^」]*」|“[^”]*”|"[^"]*"', "", text or "")
+    if re.search(r"(?:不要|不用|别|取消).{0,5}(?:查|查询|搜索).{0,5}(?:天气|气温)", t):
+        return False
+    if re.search(r"(?:天气|气温).{0,8}(?:是什么|原理|接口|API|api|代码)", t):
+        return False
+    return bool(re.search(r"天气|气温|下雨|下雪|降雨|降雪|带伞|冷不冷|热不热", t))
 
 
 def kb_query(texts: list[str], max_chars: int = 1000) -> str:
@@ -76,7 +85,7 @@ def should_consider_followup(text: str, *, linked: bool) -> bool:
     t = (text or "").strip()
     if not linked or not t or t.lower() in _ACK or _NEW_TOPIC.match(t):
         return False
-    return search_intent(t) is not None or is_explicit_request(t) or bool(_FOLLOWUP.search(t))
+    return is_weather_request(t) or search_intent(t) is not None or is_explicit_request(t) or bool(_FOLLOWUP.search(t))
 
 
 def compact_contexts(contexts: list[dict], *, max_turns: int, max_chars: int) -> list[dict]:

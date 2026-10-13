@@ -29,6 +29,8 @@ from pathlib import Path
 from onebot11 import OneBotClient, ActionFailed
 from send_result import SendResult
 from wechat_client import WeChatClient
+from safe_browser import read_website
+from browser_search import browser_search
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 
@@ -71,6 +73,7 @@ DEFAULT_CONFIG = {
     # wechatauto_level=DEBUG 时会打出侧栏查找 / 兜底搜索 / open_chat 的细节，
     # 用于验证「已在目标群时不做切换」。零运行时开销（只是放行已有日志）。
     "logging": {"level": "INFO", "wechatauto_level": "DEBUG"},
+    "website": {"enabled": True, "restrict_domains": False, "max_ping_ms": 300, "browser_channel": "msedge", "search_engine": "bing"},
 }
 
 
@@ -533,7 +536,17 @@ async def main() -> int:
         except Exception as e:  # noqa: BLE001
             log.debug("[屏幕] 切换后布局预热失败: %s", e)
 
+    website_lock = asyncio.Lock()
+
     async def handle_action(action: str, params: dict):
+        if action in ("read_website", "browser_search"):
+            # No shell, arbitrary script, desktop input or file access is exposed.
+            if website_lock.locked():
+                return {"ok": False, "error": "宿主机浏览器正忙，请稍后再试"}
+            async with website_lock:
+                if action == "browser_search":
+                    return await browser_search(params.get("query", ""), cfg.get("website") or {}, params.get("top_k", 6))
+                return await read_website(params.get("url", ""), cfg.get("website") or {})
         if action == "get_login_info":
             return {"user_id": cfg["astrbot"].get("self_id", 10001), "nickname": wx.self_name}
         if action == "get_version_info":

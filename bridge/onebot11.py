@@ -102,11 +102,25 @@ class OneBotClient:
                     log.info("已连接 AstrBot -> %s", self.ws_url)
                     await self._send_lifecycle()
                     hb = asyncio.create_task(self._heartbeat_loop())
+                    reads = set()
                     try:
                         async for raw in ws:
-                            await self._on_raw(raw)
+                            try:
+                                action = json.loads(raw).get("action")
+                            except (ValueError, AttributeError):
+                                action = None
+                            if action in ("read_website", "browser_search"):
+                                # Bounded read-only actions must not hold up group replies.
+                                task = asyncio.create_task(self._on_raw(raw))
+                                reads.add(task)
+                                task.add_done_callback(reads.discard)
+                            else:
+                                await self._on_raw(raw)
                     finally:
                         hb.cancel()
+                        for task in reads:
+                            task.cancel()
+                        await asyncio.gather(*reads, return_exceptions=True)
             except Exception as e:  # noqa: BLE001
                 log.warning("连接断开/失败: %s；5 秒后重连", e)
             finally:

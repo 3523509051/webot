@@ -96,14 +96,17 @@ class PluginConfig:
         "名字必须用上面列出的（写别的不会生效，只会变成普通文字）。\n"
     )
 
-    # ── 联网搜索（百度 AI 搜索，自管每日额度）──────────
-    # 为什么自己实现而不是用 AstrBot 内置的 web_search：
-    #   ① 工具说明里可以直接写死「仅当用户明确要求时才调用」；
-    #   ② 能自己计数 —— 百度「百度搜索」API 每天只赠送 50 次，超了会按量计费。
-    # API Key 存在 AstrBot 主配置 provider_settings.websearch_baidu_app_builder_key。
+    # ── 后台 Playwright 浏览器搜索（无需搜索 API Key）──
+    # 每日次数是本地资源上限，与搜索供应商免费额度无关。
     search_enable: bool = True
     search_daily_limit: int = 50   # 跨群共享的本地请求上限，发出前预留
     search_top_k: int = 6          # 每次搜索返回的条目数
+
+    amap_enable: bool = True
+    amap_daily_limit: int = 100   # 每次地点搜索和每段路线各计一次
+    website_enable: bool = True
+    website_daily_limit: int = 300
+    website_moderation_timeout: float = 15.0
 
     # ── L3 长期记忆（结构化「群员画像」）──────────────
     l3_enable: bool = True

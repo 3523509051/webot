@@ -17,6 +17,19 @@ sys.path.remove(str(BRIDGE))
 
 
 class SendOutcomeTests(unittest.TestCase):
+    def test_url_is_not_mistaken_for_sender_prefix(self):
+        client = WeChatClient.__new__(WeChatClient)
+        client._sid_map = {}
+        client.self_name = 'bot'
+        client.self_wxid = 'wxid_bot'
+        client.nick = lambda wxid: wxid
+        own = client._normalize({'content': 'https://www.bilibili.com/video/BVtest', 'type': '文本', 'sender_id': 1}, 'group')
+        self.assertTrue(own['is_self'])
+        self.assertTrue(own['text'].startswith('https://'))
+        other = client._normalize({'content': 'wxid_other:\nhttps://www.bilibili.com/video/BVtest', 'type': '文本', 'sender_id': 2}, 'group')
+        self.assertFalse(other['is_self'])
+        self.assertEqual(other['sender_wxid'], 'wxid_other')
+
     def test_successful_direct_send_is_confirmed_without_switching_chat(self):
         client = WeChatClient.__new__(WeChatClient)
         client.verify_send = True

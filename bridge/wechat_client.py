@@ -32,7 +32,7 @@ from send_result import SendResult
 
 log = logging.getLogger("wechat")
 
-SENDER_RE = re.compile(r"^([A-Za-z0-9_\-]+):\s*(.*)$", re.S)
+SENDER_RE = re.compile(r"^([A-Za-z0-9_\-]+):(?!//)\s*(.*)$", re.S)
 GROUP_SUFFIX = "@chatroom"
 
 # 动画表情转出来的静态帧缓存目录（同一个表情只下一次、只转一次）
