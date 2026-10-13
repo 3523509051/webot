@@ -16,3 +16,7 @@ websockets
 zstandard
 Pillow
 imageio-ffmpeg
+
+# 受限网页读取：独立 Edge 浏览器，只渲染提取后的文字
+aiohttp
+playwright

@@ -33,5 +33,10 @@
   "task_buffer_max_entries": 200,
   "task_buffer_max_chars": 12000,
   "kb_query_max_chars": 1000,
-  "kb_retrieval_timeout": 5.0
+  "kb_retrieval_timeout": 5.0,
+  "amap_enable": true,
+  "amap_daily_limit": 100,
+  "website_enable": true,
+  "website_daily_limit": 300,
+  "website_moderation_timeout": 15.0
 }

@@ -17,7 +17,7 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
         self.bot = Plugin(types.SimpleNamespace())
         self.bot.cfg.l3_enable = self.bot.cfg.kb_enable = self.bot.cfg.enable_mention = False
         self.bot.cfg.search_enable = True
-        self.bot._baidu_search_key = lambda: "fake-offline-key"
+        self.bot._moderate_web_text = AsyncMock(return_value=True)
         self.calls = []
 
     async def asyncTearDown(self):
@@ -33,70 +33,62 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
 
     def http(self, status=200, data=None, entered=None, release=None):
         owner = self
-        class Response:
-            async def __aenter__(self):
-                if entered:
-                    entered.set()
-                if release:
-                    await release.wait()
-                return self
-            async def __aexit__(self, *args): pass
-            async def json(self): return data if data is not None else {}
-        Response.status = status
-        class Session:
-            def __init__(self, **kwargs): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *args): pass
-            def post(self, url, **kwargs):
-                owner.calls.append(kwargs["json"])
-                return Response()
-        return patch.dict(sys.modules, {"aiohttp": types.SimpleNamespace(
-            ClientSession=Session, ClientTimeout=lambda **kwargs: None)})
+        async def call(action, **kwargs):
+            owner.calls.append(kwargs)
+            owner.assertEqual(action, "browser_search")
+            if entered:
+                entered.set()
+            if release:
+                await release.wait()
+            if status != 200:
+                return {"ok": False, "error": f"搜索页面返回 HTTP {status}"}
+            return {"ok": True, "source": "必应网页版", "results": (data or {}).get("references", [])}
+        return patch.object(Event, "bot", types.SimpleNamespace(call_action=call), create=True)
 
     async def test_intent_rejects_quotes_capabilities_and_negatives(self):
         parse = self.module.search_intent
-        for text in ("你好", "你能搜索吗？", "搜索是什么意思？", "他说“帮我搜索天气”"):
+        for text in ("你好", "你能搜索吗？", "搜索是什么意思？", "他说“帮我搜索新闻”"):
             self.assertIsNone(parse(text), text)
         for text in ("不要搜索", "不用联网搜索了", "取消搜索"):
             self.assertIs(parse(text), False, text)
-        for text in ("请百度搜索天气", "帮我搜索北京天气", "上网查一下新闻"):
+        for text in ("请百度搜索新闻", "帮我搜索北京新闻", "上网查一下新闻", "你直接搜"):
             self.assertIs(parse(text), True, text)
         with self.http():
-            result = await self.bot.web_search(Event("a", "你好"), "天气")
-        self.assertIn("没有明确", result)
-        self.assertEqual(self.calls, [])
-        self.assertFalse(self.bot._search_quota.path.exists())
+            result = await self.bot.web_search(Event("a", "你好"), "新闻")
+        self.assertIn("没有返回结果", result)
+        self.assertEqual(len(self.calls), 1)
+        self.assertTrue(self.bot._search_quota.path.exists())
 
-    async def test_batch_permissions_bind_sender_and_allow_withdrawal(self):
+    async def test_batch_membership_does_not_gate_search_but_cancellation_still_works(self):
         root = Event("alice", "解释排序", at=True)
         items = [self.item(root, "解释排序"),
-                 self.item(Event("bob", "请百度搜索天气"), "请百度搜索天气")]
+                 self.item(Event("bob", "请百度搜索新闻"), "请百度搜索新闻")]
         self.bot._prepare_request_metadata(root, items)
         with self.http():
-            self.assertIn("未授权", await self.bot.web_search(root, "天气", "alice"))
-            self.assertIn("没有返回结果", await self.bot.web_search(root, "天气", "bob"))
-            await self.bot.on_group_message(Event("bob", "不要搜索了"))
-            self.assertIn("撤回", await self.bot.web_search(root, "天气", "bob"))
-        self.assertEqual(len(self.calls), 1)
+            self.assertIn("没有返回结果", await self.bot.web_search(root, "新闻", "alice"))
+            self.assertIn("没有返回结果", await self.bot.web_search(root, "新闻", "bob"))
+            await self.bot.on_group_message(Event("alice", "不要搜索了"))
+            self.assertIn("取消", await self.bot.web_search(root, "新闻", "bob"))
+        self.assertEqual(len(self.calls), 2)
         items.append(self.item(Event("bob", "不要搜索"), "不要搜索"))
         self.bot._prepare_request_metadata(root, items)
         self.assertEqual(root.get_extra("ga_search_requests"), [])
 
-    async def test_multiple_authorizations_require_explicit_sender(self):
-        event = Event("a", "请搜索天气")
+    async def test_multiple_senders_can_search_without_requester_id(self):
+        event = Event("a", "请搜索新闻")
         self.bot._prepare_request_metadata(event, [
-            self.item(Event(sid, "请搜索天气"), "请搜索天气") for sid in ("a", "b")])
+            self.item(Event(sid, "请搜索新闻"), "请搜索新闻") for sid in ("a", "b")])
         with self.http():
-            result = await self.bot.web_search(event, "天气")
-        self.assertIn("不明确", result)
-        self.assertEqual(self.calls, [])
+            result = await self.bot.web_search(event, "新闻")
+        self.assertIn("没有返回结果", result)
+        self.assertEqual(len(self.calls), 1)
 
     async def test_concurrent_requests_reserve_before_network(self):
         self.bot.cfg.search_daily_limit = 1
         entered, release = asyncio.Event(), asyncio.Event()
         with self.http(data={"references": [{"url": "https://example.test", "title": "test"}]},
                        entered=entered, release=release):
-            first = asyncio.create_task(self.bot.web_search(Event("a", "请搜索天气"), "天气"))
+            first = asyncio.create_task(self.bot.web_search(Event("a", "请搜索新闻"), "新闻"))
             await asyncio.wait_for(entered.wait(), 1)
             second = await self.bot.web_search(Event("b", "请搜索新闻"), "新闻")
             release.set()
@@ -106,11 +98,11 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot._search_quota._read()["success"], 1)
 
     async def test_failures_and_empty_results_consume_allowance(self):
-        event = Event("a", "请搜索天气")
+        event = Event("a", "请搜索新闻")
         with self.http(status=500):
-            self.assertIn("失败", await self.bot.web_search(event, "天气"))
+            self.assertIn("失败", await self.bot.web_search(event, "新闻"))
         with self.http():
-            self.assertIn("没有返回结果", await self.bot.web_search(event, "天气"))
+            self.assertIn("没有返回结果", await self.bot.web_search(event, "新闻"))
         stats = self.bot._search_quota._read()
         self.assertEqual((stats["count"], stats["failed"], stats["empty"]), (2, 1, 1))
 
@@ -118,10 +110,10 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
         quota = self.bot._search_quota
         quota.path.write_text("broken", encoding="utf-8")
         with self.http():
-            self.assertIn("不可用", await self.bot.web_search(Event("a", "请搜索天气"), "天气"))
+            self.assertIn("不可用", await self.bot.web_search(Event("a", "请搜索新闻"), "新闻"))
         quota.path.unlink()
         with patch.object(quota, "_write", side_effect=OSError("disk unavailable")), self.http():
-            self.assertIn("不可用", await self.bot.web_search(Event("a", "请搜索天气"), "天气"))
+            self.assertIn("不可用", await self.bot.web_search(Event("a", "请搜索新闻"), "新闻"))
         self.assertEqual(self.calls, [])
 
     async def test_quota_migrates_old_file_and_handles_midnight(self):
@@ -139,7 +131,7 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_request_keeps_reservation(self):
         entered, release = asyncio.Event(), asyncio.Event()
         with self.http(entered=entered, release=release):
-            task = asyncio.create_task(self.bot.web_search(Event("a", "请搜索天气"), "天气"))
+            task = asyncio.create_task(self.bot.web_search(Event("a", "请搜索新闻"), "新闻"))
             await entered.wait()
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):
@@ -147,6 +139,16 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
         stats = self.bot._search_quota._read()
         self.assertEqual((stats["count"], stats["failed"]), (1, 1))
+
+    async def test_browser_search_no_key_needed_and_unsafe_results_do_not_escape(self):
+        event = Event("a", "找学校官网")
+        with self.http(data={"references": [{"url": "https://example.org", "title": "school"}]}):
+            self.assertIn("必应网页版", await self.bot.web_search(event, "学校官网"))
+            self.bot._moderate_web_text.return_value = False
+            result = await self.bot.web_search(event, "学校官网")
+        self.assertIn("拦截", result)
+        self.assertNotIn("https://example.org", result)
+        self.assertTrue(event.get_extra("ga_website_used"))
 
     async def test_kb_query_uses_plain_batch_text_and_reuses_prefetch(self):
         self.bot.cfg.kb_enable = True
@@ -183,16 +185,16 @@ class SearchKBTests(unittest.IsolatedAsyncioTestCase):
             await self.bot.on_group_message(root)
             old = root.get_extra("ga_kb_prefetch")
             tick[0] = 1
-            await self.bot.on_group_message(Event("bob", "请百度搜索天气", at=True))
+            await self.bot.on_group_message(Event("bob", "请百度搜索新闻", at=True))
             tick[0] = 6
             req = types.SimpleNamespace(prompt="解释排序", image_urls=[])
             await self.bot._finish_batch(root, req, root.get_extra("ga_batch"))
-        self.assertEqual(root.get_extra("ga_kb_query"), "解释排序\n请百度搜索天气")
+        self.assertEqual(root.get_extra("ga_kb_query"), "解释排序\n请百度搜索新闻")
         self.assertEqual([item["sender_id"] for item in root.get_extra("ga_search_requests")], ["bob"])
         entry = root.get_extra("ga_kb_prefetch")
         self.assertEqual(await self.bot._kb_search_for("group-1", root.get_extra("ga_kb_query"), entry), "knowledge")
         await asyncio.gather(old[1], return_exceptions=True)
-        self.bot.kbs.search.assert_awaited_once_with("group-1", "解释排序\n请百度搜索天气")
+        self.bot.kbs.search.assert_awaited_once_with("group-1", "解释排序\n请百度搜索新闻")
 
     async def test_missing_kb_returns_empty_without_creating_library(self):
         self.bot.cfg.kb_enable = True

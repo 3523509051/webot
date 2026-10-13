@@ -27,6 +27,7 @@ services:
       - "${ONEBOT_WS_PORT:-6199}:6199"     # OneBot v11 反向 WS（桥连这里）
     environment:
       - TZ=Asia/Shanghai
+      - AMAP_WEB_KEY=${AMAP_WEB_KEY:-}
     volumes:
       - ./data/astrbot:/AstrBot/data
       # 插件源码以仓库 ./plugins 为准（覆盖容器里的运行时副本）

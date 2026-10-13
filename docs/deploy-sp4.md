@@ -351,6 +351,9 @@ schtasks /Create /TN "webot-autostart" /SC ONLOGON /RL HIGHEST /TR "C:\webot\sta
 
 ## 11. 与旧机器的差异备忘（agent 容易想当然的地方）
 
+v0.14.0 可选的高德路线与独立浏览器读取部署步骤见 [maps-web.md](maps-web.md)。
+网页读取需安装桥的新依赖和 Edge；高德需单独的 Web 服务 Key，不依赖虚拟屏或知识库。
+
 | 项 | 旧机（Windows 台式/笔记本） | SP4 |
 |---|---|---|
 | 屏幕 | 1366×768 级别 | **2736×1824 @200%** → 校准数据不通用，首次发送会重校准 |

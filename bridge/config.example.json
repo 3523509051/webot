@@ -14,6 +14,17 @@
     "image_max_edge": 1280,
     "db_dir": ""
   },
+  "website": {
+    "enabled": true,
+    "restrict_domains": false,
+    "max_ping_ms": 300,
+    "browser_channel": "msedge",
+    "search_engine": "bing",
+    "allowed_domains": [
+      "baidu.com", "amap.com", "gov.cn", "people.com.cn", "xinhuanet.com",
+      "ctrip.com", "mafengwo.cn", "12306.cn", "github.com", "wikipedia.org", "wikimedia.org"
+    ]
+  },
   "logging": {
     "level": "INFO"
   }
