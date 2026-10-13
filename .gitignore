@@ -5,6 +5,9 @@
 data/
 
 # 备份
+*.bak
+scripts/_*
+scripts/local/
 *.tar.gz
 backup-*
 

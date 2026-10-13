@@ -102,7 +102,7 @@ class PluginConfig:
     #   ② 能自己计数 —— 百度「百度搜索」API 每天只赠送 50 次，超了会按量计费。
     # API Key 存在 AstrBot 主配置 provider_settings.websearch_baidu_app_builder_key。
     search_enable: bool = True
-    search_daily_limit: int = 50   # 与百度赠送额度一致；用完当天拒绝搜索
+    search_daily_limit: int = 50   # 跨群共享的本地请求上限，发出前预留
     search_top_k: int = 6          # 每次搜索返回的条目数
 
     # ── L3 长期记忆（结构化「群员画像」）──────────────
@@ -140,6 +140,8 @@ class PluginConfig:
     kb_enable: bool = True
     kb_name_prefix: str = "群聊记忆-"       # 每群一个库：<prefix><群id>
     kb_embedding_provider_id: str = "ollama/bge-m3"  # provider 实例 ID（指向来源 ollama_embedding）
+    kb_query_max_chars: int = 1000
+    kb_retrieval_timeout: float = 5.0  # 整次检索总超时，不按子步骤累计
     kb_daily_limit: int = 20               # 每天最多自动写入多少条（防爆库）
     kb_dedup_score: float = 0.90           # 检索相似度 ≥ 此值视为已存在，跳过写入
     kb_inject_top: int = 3                 # 注入时最多带几条
@@ -166,6 +168,9 @@ class PluginConfig:
     # 静默5秒派发；连续补充也不能超过首条起30秒。图片不重置计时。
     merge_enable: bool = True
     merge_seconds: float = 5.0
+    task_buffer_seconds: float = 120.0
+    task_buffer_max_entries: int = 200
+    task_buffer_max_chars: int = 12000
     merge_max_seconds: float = 30.0
 
     # ── 历史里的图片不再重发 ─────────────────────────

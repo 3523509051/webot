@@ -102,6 +102,10 @@ $env:WECHAT_DB_DIR = "C:\Users\<你>\OneDrive\文档\xwechat_files"
 
 ---
 
+## 发送结果
+
+发送结果分为成功、明确失败和不确定。底层界面返回失败不再报告为成功；已按下发送但数据库未确认时，桥返回非零错误及 `delivery_state=unknown`，不会自动重发。开启 `verify_send` 会最多等待约8秒回读；回读使用 `config.json` 中已定位的数据库。
+
 ## 已知限制
 
 - **仅 Windows**：依赖 Windows 微信客户端 + UIA/OCR，**无法在 Ubuntu 运行**（跨平台见 `../docs/roadmap.md` P0）

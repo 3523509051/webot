@@ -23,6 +23,13 @@ log = logging.getLogger("onebot")
 ActionHandler = Callable[[str, dict], Awaitable[Any]]
 
 
+class ActionFailed(Exception):
+    def __init__(self, message: str, *, delivery_state: str = "failed", retcode: int = 1200):
+        super().__init__(message)
+        self.delivery_state = delivery_state
+        self.retcode = retcode
+
+
 def _to_cq(segments: list[dict]) -> str:
     """把消息段转成 OneBot v11 的 CQ 码字符串。"""
     parts: list[str] = []
@@ -122,13 +129,24 @@ class OneBotClient:
         try:
             if self.action_handler is not None:
                 data = await self.action_handler(action, payload.get("params") or {})
+                if action.startswith("send_") and (
+                    not isinstance(data, dict) or not data.get("message_id")
+                ):
+                    raise ActionFailed("发送动作没有返回有效消息ID")
+            else:
+                raise ActionFailed("动作处理器未配置")
+        except ActionFailed as e:
+            status, retcode = "failed", e.retcode
+            data = {"error": str(e), "delivery_state": e.delivery_state,
+                    "retry_safe": False}
         except Exception as e:  # noqa: BLE001
             log.exception("action 处理失败: %s", action)
             status, retcode = "failed", 1
-            data = {"error": str(e)}
+            data = {"error": str(e), "retry_safe": False}
 
         await self._send_json(
-            {"status": status, "retcode": retcode, "data": data, "echo": echo}
+            {"status": status, "retcode": retcode, "data": data, "echo": echo,
+             "message": (data or {}).get("error", "") if isinstance(data, dict) else ""}
         )
 
     async def _heartbeat_loop(self) -> None:

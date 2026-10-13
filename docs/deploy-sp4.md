@@ -340,7 +340,7 @@ schtasks /Create /TN "webot-autostart" /SC ONLOGON /RL HIGHEST /TR "C:\webot\sta
 | 表情包只回占位符 | 桥日志搜 `表情包` | 无 `cdnurl`（部分表情确实没有）→ 正常退化；有报错 → 按报错处理 |
 | 熄屏报 `✗ 找不到虚拟显示器驱动包` | 驱动没放到位 | 放到 `tools\vdd\amyuni\usbmmidd_v2\`（§6.1 固定路径） |
 | 熄屏时弹 UAC | 计划任务没建 | `vdd.ps1 -Action install-task`（§6.2） |
-| 熄屏后 15~40 秒内屏自己亮回来 | `DisplaySwitch.exe` 未退出，把显示配置回退 | 脚本已自动杀它；仍复现 → `logs\screen-off.log` + `scripts\_vdd_diag.ps1` |
+| 熄屏后 15~40 秒内屏自己亮回来 | `DisplaySwitch.exe` 未退出，把显示配置回退 | 脚本已自动杀它；仍复现 → `logs\screen-off.log` |
 | 熄屏后 `@` 失败/发错位置 | 虚拟屏分辨率不对（微信窗口被挤出屏幕） | 确认脚本把虚拟屏顶到 3840×2160（默认 `-VddW 3840`）；必要时删 `logs` 下校准缓存让它重校准 |
 | 一条消息发送拖到 100+ 秒 | 切显示拓扑与发送**重叠**了 | 铁律：屏幕动作必须排在消息发送之后；用 `/gaoff`（先回消息再切屏），不要在桥发送期间手动切 |
 | Docker 报 500 / `docker info` 空 | 缺 WSL2/虚拟机平台 | §阶段二 第 1 步 + 重启；`wsl --update` |

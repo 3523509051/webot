@@ -6,34 +6,18 @@
 
 用法：
     .\\.venv\\Scripts\\python.exe probe_db.py
-    （也可用环境变量 WECHAT_DB_DIR 显式指定 xwechat_files 根目录）
+    （优先读取环境变量 WECHAT_DB_DIR，其次读取本机 config.json 的 wechat.db_dir）
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
-CANDIDATES = [
-    Path.home() / "Documents" / "xwechat_files",
-    Path.home() / "OneDrive" / "文档" / "xwechat_files",
-    Path.home() / "OneDrive" / "Documents" / "xwechat_files",
-    Path.home() / "OneDrive" / "文件" / "xwechat_files",
-]
+from paths import find_xwechat_root
 
 
 def find_root() -> Path | None:
-    env = os.environ.get("WECHAT_DB_DIR")
-    if env and Path(env).exists():
-        return Path(env)
-    for p in CANDIDATES:
-        if p.exists():
-            return p
-    # 兜底：遍历用户目录浅层
-    for p in Path.home().glob("*/**/xwechat_files"):
-        if p.is_dir():
-            return p
-    return None
+    return find_xwechat_root()
 
 
 def main() -> int:
