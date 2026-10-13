@@ -26,7 +26,8 @@ import sys
 from io import BytesIO
 from pathlib import Path
 
-from onebot11 import OneBotClient
+from onebot11 import OneBotClient, ActionFailed
+from send_result import SendResult
 from wechat_client import WeChatClient
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
@@ -592,7 +593,7 @@ async def main() -> int:
                     name or "?",
                     seg_types,
                 )
-                return {"message_id": 0}
+                raise ActionFailed("没有可发送的文字，或目标群不存在")
             # 模型写了 @某人 → 换成微信**真实 @**（对方会收到提醒）。
             # 只有名字确实是本群成员时才走 @，否则按普通文本发。
             # before/after 是 @ 的前后两段：@ 令牌要插在模型写的**原位置**，
@@ -611,7 +612,12 @@ async def main() -> int:
                 ok = await asyncio.to_thread(wx.send_at, name, at_name, before, after)
             else:
                 ok = await asyncio.to_thread(wx.send_text, name, text)
-            return {"message_id": 1 if ok else 0}
+            if not ok:
+                state = ok.state if isinstance(ok, SendResult) else "unknown"
+                detail = ok.detail if isinstance(ok, SendResult) else "微信未确认发送结果"
+                raise ActionFailed(detail, delivery_state=state,
+                                   retcode=1201 if state == "unknown" else 1200)
+            return {"message_id": bot.next_msg_id()}
         # 兜底：AstrBot 的长回复会走 OneBot 的**合并转发**动作
         # （send_group_forward_msg），微信这边没法用 UI 自动化做真·合并转发
         # （要选中多条消息再转发，太脆），所以把 nodes 里的文本抽出来当普通
@@ -628,10 +634,15 @@ async def main() -> int:
                     name or "?",
                     list(params.keys()),
                 )
-                return {"message_id": 0}
+                raise ActionFailed("没有可发送的文字，或目标群不存在")
             log.info("[发送] 合并转发 → 按普通长消息发出（%d 字）", len(text))
             ok = await asyncio.to_thread(wx.send_text, name, text)
-            return {"message_id": 1 if ok else 0}
+            if not ok:
+                state = ok.state if isinstance(ok, SendResult) else "unknown"
+                detail = ok.detail if isinstance(ok, SendResult) else "微信未确认发送结果"
+                raise ActionFailed(detail, delivery_state=state,
+                                   retcode=1201 if state == "unknown" else 1200)
+            return {"message_id": bot.next_msg_id()}
 
         # 未实现的动作：**发送类**必须告警（静默失败极难排查），查询类记 debug
         if action.startswith("send_"):
@@ -640,6 +651,7 @@ async def main() -> int:
                 action,
                 list(params.keys())[:8],
             )
+            raise ActionFailed(f"未实现的发送动作：{action}", retcode=1404)
         else:
             log.debug("未处理的 action: %s", action)
         return None

@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from send_result import SendResult
+
 log = logging.getLogger("wechat")
 
 SENDER_RE = re.compile(r"^([A-Za-z0-9_\-]+):\s*(.*)$", re.S)
@@ -81,6 +83,8 @@ class WeChatClient:
         root = db_dir or find_xwechat_root()
         self.db = WeChatDB(db_dir=str(root)) if root else WeChatDB()
         self.gui = WeChatGUI()
+        # 回读确认与消息读取共用同一份已定位的数据库。
+        self.gui._cached_db = self.db
 
         info = self.db.get_self_info() or {}
         self.self_wxid = info.get("username") or getattr(self.db, "wxid", "")
@@ -543,7 +547,21 @@ class WeChatClient:
             return False
         return max(hits, key=len) == target
 
-    def send_text(self, group_name: str, text: str) -> bool:
+    def _confirm_delivery(self, parts: list[str], group_name: str, mark, mode: str) -> SendResult:
+        if mark is None:
+            return SendResult("unknown", "已操作发送，但未取得发送前水位；不自动重发")
+        deadline = time.time() + 8
+        try:
+            while True:
+                if all(self.gui._verify_sent(part, group_name, mode=mode, after=mark) for part in parts):
+                    return SendResult("sent", "数据库已确认")
+                if time.time() >= deadline:
+                    return SendResult("unknown", "已操作发送，但数据库未确认；不自动重发")
+                time.sleep(1)
+        except Exception as e:
+            return SendResult("unknown", f"已操作发送，但回读失败：{e}；不自动重发")
+
+    def send_text(self, group_name: str, text: str) -> SendResult:
         """发送文本。**已在目标会话时直接发送，绝不查找 / 切换会话。**
 
         需求：同一个群不应该出现侧栏查找或搜索框搜索；只有当目标**不是**当前会话
@@ -570,21 +588,25 @@ class WeChatClient:
         t_probe = _t.time() - t0
         via = "direct" if (same and uia is not None) else "switch"
         try:
-            if same and uia is not None:
-                # 已在目标会话：直接键入发送，**不触发任何会话查找**
-                ok = bool(uia.send_text(text))
-                if not ok:
-                    # 直发失败 → 回退到库的完整流程（允许它去切换）
-                    via = "direct-fallback"
-                    self.gui.send_msg(text, group_name, self.verify_send)
-                    ok = True
+            can_confirm = callable(getattr(self.gui, "_send_watermark", None)) and callable(
+                getattr(self.gui, "_verify_sent", None))
+            if same and uia is not None and (not self.verify_send or can_confirm):
+                # 当前会话直发，确认也不切换会话。False可能发生于回车阶段。
+                mark = self.gui._send_watermark(group_name) if self.verify_send else None
+                if not uia.send_text(text):
+                    ok = SendResult("unknown", "UIA未确认发送结果，已停止自动重发")
+                elif self.verify_send:
+                    ok = self._confirm_delivery([text], group_name, mark, "exact")
+                else:
+                    ok = SendResult("sent")
             else:
-                # 不在目标会话（或取不到 UIA）：交给库的完整流程，允许它切换
-                self.gui.send_msg(text, group_name, self.verify_send)
-                ok = True
+                ok = SendResult.from_gui(self.gui.send_msg(text, group_name, self.verify_send))
         except Exception as e:  # noqa: BLE001
-            log.error("发送失败(%s): %s", group_name, e)
-            return False
+            log.error("发送结果不确定(%s): %s", group_name, e)
+            return SendResult("unknown", str(e))
+        if not ok:
+            log.warning("[发送未确认] %s: state=%s %s", group_name, ok.state, ok.detail)
+            return ok
 
         log.info(
             "[发送] %s: %s (探测 %.2fs + 发送 %.2fs, 当前会话=%r, 同名=%s, 路径=%s)",
@@ -743,7 +765,7 @@ class WeChatClient:
 
     def _uia_send_at(
         self, group_name: str, member: str, before: str, after: str
-    ) -> bool:
+    ) -> bool | SendResult:
         """UIA 快路径：确保在目标群（已在就不切）→ 粘前段 → 插 @ 令牌 → 粘后段 → 回车。
 
         **顺序为什么是「前段 → @ → 后段」**：微信的 @ 令牌只能在光标处
@@ -761,6 +783,9 @@ class WeChatClient:
         from wechatauto.uia_driver import rhythm
 
         t0 = time.time()
+        if self.verify_send and not (callable(getattr(self.gui, "_send_watermark", None)) and
+                                     callable(getattr(self.gui, "_verify_sent", None))):
+            return False  # old GUI versions: use public send_msg verification instead
         try:
             uia = self.gui._get_uia()
         except Exception as e:  # noqa: BLE001
@@ -822,6 +847,7 @@ class WeChatClient:
             log.warning("UIA @ 粘贴/选人失败: %s", e)
             return False
 
+        mark = self.gui._send_watermark(group_name) if self.verify_send else None
         # ③ 收尾。@ 没成功时必须清干净再回车：
         #    a) 弹层还开着时回车会被它消费掉（=选中高亮的第一项）——真实事故：
         #       「机器人总 @ 到第一个成员」**且那条消息根本没发出去**；
@@ -838,8 +864,15 @@ class WeChatClient:
             rhythm.nap(0.2)
             edit.SendKeys("{Enter}", waitTime=0.05)
         except Exception as e:  # noqa: BLE001
-            log.warning("UIA 发送失败: %s", e)
-            return False
+            log.warning("UIA 发送结果不确定: %s", e)
+            return SendResult("unknown", str(e))
+
+        if self.verify_send:
+            # @ tokens split before/after in the DB; verify both text portions after the watermark.
+            parts = [part.strip() for part in (before, after) if part.strip()]
+            outcome = self._confirm_delivery(parts, group_name, mark, "contains")
+            if not outcome:
+                return outcome
 
         log.info(
             "[发送@] %s -> %s（UIA %.2fs, 路径=%s, @=%s）: %s",
@@ -852,7 +885,7 @@ class WeChatClient:
         )
         return True
 
-    def send_at(self, group_name: str, member: str, before: str, after: str) -> bool:
+    def send_at(self, group_name: str, member: str, before: str, after: str) -> SendResult:
         """在目标群里 @ 成员后发送正文。**UIA 快路径优先**，失败则退化为普通发送。
 
         before/after：模型写的 `@昵称` 之前 / 之后的正文（见 main.find_mention）。
@@ -862,8 +895,11 @@ class WeChatClient:
             `自动最小化遮挡窗口 N 个`），还会去侧栏找会话 —— 这两点用户都明确反感。
             没有 @ 总比抢窗口好；失败时日志会写明原因，便于后续把 UIA 路径调稳。
         """
-        if self._uia_send_at(group_name, member, before, after):
-            return True
+        outcome = self._uia_send_at(group_name, member, before, after)
+        if isinstance(outcome, SendResult):
+            return outcome
+        if outcome:
+            return SendResult("sent")
         log.warning("UIA @ 未成功，本条按普通文本发送（不发 @，也不动你的其它窗口）")
         return self.send_text(group_name, before + after)
 

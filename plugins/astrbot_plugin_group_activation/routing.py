@@ -17,6 +17,53 @@ _IMAGE_QUERY = re.compile(
 )
 _NEW_TOPIC = re.compile(r"^(?:大家|有人|你们|群里|谁)(?:知道|觉得|会|能|有)?")
 _ACK = {"嗯", "嗯嗯", "哦", "好", "好的", "收到", "谢谢", "哈哈", "哈哈哈", "ok", "nice"}
+_REQUEST = re.compile(
+    r"[?？]|(?:为什么|怎么|如何|多少|几个|什么|哪[个里]|能不能|可以吗|是不是)"
+    r"|^(?:(?:来吧|请|帮我|麻烦你|你|再|继续|先)[，,、\s]*)*"
+    r"(?:数数|数一下|计数|计算|算一下|写|翻译|解释|总结|分析|检查|修改|列出|举例|展开)"
+)
+_COUNT_TASK = re.compile(r"数数|数一下|计数|数到\s*\d+")
+_NUMBERS = re.compile(r"[+-]?\d+(?:\.\d+)?(?:[\s,，、;；]+[+-]?\d+(?:\.\d+)?)*")
+
+
+def is_explicit_request(text: str) -> bool:
+    t = (text or "").strip()
+    return bool(t and t.lower() not in _ACK and not _NEW_TOPIC.match(t) and _REQUEST.search(t))
+
+
+def starts_count_task(text: str) -> bool:
+    return bool(_COUNT_TASK.search((text or "").strip()))
+
+
+def is_number_content(text: str) -> bool:
+    return bool(_NUMBERS.fullmatch((text or "").strip()))
+
+
+def is_count_question(text: str) -> bool:
+    return bool(re.search(r"(?:多少|几个).*数|数.*(?:多少|几个)", text or ""))
+
+
+def search_intent(text: str) -> bool | None:
+    """Only the current speaker's explicit request grants search; quotes do not."""
+    t = re.sub(r"「[^」]*」|“[^”]*”|\"[^\"]*\"", "", text or "")
+    t = re.sub(r"\[At:\d+\]", "", t).strip()
+    if re.search(r"(?:不要|不用|无需|不必|不需要|别|禁止|取消|停止|先不)(?:再|去|帮我|进行|联网|百度)*\s*(?:搜索|搜|上网|联网|查|search)", t, re.I):
+        return False
+    if re.search(r"(?:搜索|联网|search)(?:是什么意思|是什么|怎么用|功能)|(?:能|会|可以)(?:联网)?(?:搜索|search)(?:吗|么)[?？。]*$", t, re.I):
+        return None
+    if re.search(r"(?:上网|联网|网上|百度)(?:.{0,5})(?:搜|查|找)|(?:帮我|请|麻烦你|给我|再|继续)\s*(?:搜|search)|^(?:我想|我要|你)?\s*(?:搜索|搜一下|搜搜|search\b|look\s+up\b)|百度一下", t, re.I):
+        return True
+    return None
+
+
+def kb_query(texts: list[str], max_chars: int = 1000) -> str:
+    """Use question text consistently, without batch JSON or sender metadata."""
+    questions = []
+    for text in texts:
+        text = re.sub(r"\[At:\d+\]|\[(?:图片|表情包|语音|空 @)\]", "", text or "").strip()
+        if text and not is_number_content(text) and text not in questions:
+            questions.append(text)
+    return "\n".join(questions)[-max(1, int(max_chars)):]
 
 
 def wants_image(text: str) -> bool:
@@ -29,7 +76,7 @@ def should_consider_followup(text: str, *, linked: bool) -> bool:
     t = (text or "").strip()
     if not linked or not t or t.lower() in _ACK or _NEW_TOPIC.match(t):
         return False
-    return bool(_FOLLOWUP.search(t))
+    return search_intent(t) is not None or is_explicit_request(t) or bool(_FOLLOWUP.search(t))
 
 
 def compact_contexts(contexts: list[dict], *, max_turns: int, max_chars: int) -> list[dict]:

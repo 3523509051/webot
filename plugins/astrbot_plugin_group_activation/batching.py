@@ -13,6 +13,8 @@ class MessageBatch:
     items: list[dict] = field(default_factory=list)
     participants: set[str] = field(default_factory=set)
     closed: bool = False
+    cancelled: bool = False
+    kb_prefetch: tuple | None = None
 
     def __post_init__(self):
         self.last_related = self.started
@@ -29,3 +31,18 @@ class MessageBatch:
         self.items.append(item)
         self.participants.add(item["sender_id"])
         self.last_related = now
+
+
+@dataclass
+class NumberTask:
+    instruction: str
+    updated: float
+    entries: list[str] = field(default_factory=list)
+    truncated: bool = False
+
+    def append(self, text: str, now: float, max_entries: int, max_chars: int) -> None:
+        self.updated = now
+        if len(self.entries) >= max_entries or sum(map(len, self.entries)) + len(text) > max_chars:
+            self.truncated = True
+            return
+        self.entries.append(text)
