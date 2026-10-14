@@ -90,13 +90,29 @@ function Stop-Bridge {
 
 function Wait-AstrbotReady {
     param([int]$TimeoutSec = 180)
+    # 判据必须「桥还没起」时也成立：
+    # 以前等的是日志里的 '适配器已连接'，但那句只有**桥连上之后**才会出现，
+    # 而桥是在 4/5 步才启动 → 冷启动时这里必然白等 180 秒并报一条假警
+    # （2026-10-12 实况：AstrBot 其实 17:33 就绪、桥 17:37 连上，用户先看到的却是超时）。
+    # 现在改成：容器在跑 **且 WebUI 能应答** 就算就绪；桥连上与否交给 5/5 步去等。
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 4
-        $logs = (cmd /c "docker logs --tail 300 webot-astrbot 2>&1" | Out-String)
-        if ($logs -match '适配器已连接') { Ok 'AstrBot 的 OneBot 适配器已就绪'; return $true }
+        Start-Sleep -Seconds 3
+        $running = (cmd /c "docker inspect --format {{.State.Running}} webot-astrbot 2>nul") -match 'true'
+        if ($running) {
+            try {
+                $resp = Invoke-WebRequest -Uri $WebuiUrl -UseBasicParsing -TimeoutSec 5
+                if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
+                    Ok "AstrBot 已就绪（WebUI $WebuiUrl 已应答 $($resp.StatusCode)）"
+                    return $true
+                }
+            } catch { }
+            # 退化判据：容器起来了、WebUI 刚启动但端口还没应答
+            $logs = (cmd /c "docker logs --tail 200 webot-astrbot 2>&1" | Out-String)
+            if ($logs -match 'Starting WebUI at') { Ok 'AstrBot 已就绪（WebUI 已启动）'; return $true }
+        }
     }
-    Warn "等 AstrBot 适配器超时（$TimeoutSec 秒）"
+    Warn "等 AstrBot 就绪超时（$TimeoutSec 秒）"
     Hint '看日志：docker logs --tail 100 webot-astrbot'
     return $false
 }
@@ -223,8 +239,17 @@ function Invoke-Start {
     [void](Wait-AstrbotReady)
 
     Step '4/5 拉起微信桥'
-    Stop-Bridge
-    if (-not (Start-Bridge)) { Show-Status; return 1 }
+    # 非破坏式：start.cmd 只负责「把没起来的补起来」，**绝不杀正在跑的桥**。
+    # 之前这里是无条件 Stop-Bridge —— 手动双击一次就会把正在干活的桥打断，
+    # 正在等回复的那条消息也随之发不出去（2026-10-10 改）。
+    # 要重启桥是有意为之的操作，请用 restart-bridge.cmd。
+    $alive = @(Get-BridgeProcesses)
+    if ($alive.Count -gt 0) {
+        Ok "桥已在运行（PID $($alive.ProcessId -join ', ')），保持不动"
+        Hint '要重启桥：双击 restart-bridge.cmd'
+    } else {
+        if (-not (Start-Bridge)) { Show-Status; return 1 }
+    }
 
     Step '5/5 等桥连上'
     $r = Wait-BridgeReady
@@ -239,6 +264,7 @@ function Invoke-Start {
         foreach ($l in $tail) { Say "    $l" -ForegroundColor DarkGray }
         Say ''
         Write-Host '全部就绪 ✔  现在可以在群里 @ 机器人了。' -ForegroundColor Green
+        Say '    这个窗口可以随时关掉：容器与桥都是独立进程，关窗不影响运行。' -ForegroundColor DarkGray
         return 0
     }
 
