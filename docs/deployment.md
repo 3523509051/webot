@@ -216,8 +216,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\webot-service.ps1 as
 | 怀疑网易 GameViewer 服务改回显示配置 | **排除**：停掉 `GameViewerService` 照样回退（`_vdd_test2`） | 仍留了 `webot-gv-stop/start` 两个任务备用 |
 | 每次熄屏都弹 UAC，没人点就静默降级 | `enableidd` 需管理员 | 建了**最高权限计划任务**（`vdd.ps1 -Action install-task`）：`webot-vdd-enable/disable`，脚本用 `Start-ScheduledTask` 触发，**免 UAC** |
 
-**兜底看门狗**：等待真人输入期间每 2 秒检查一次「内屏是否又被接上」，是就立刻重新切黑屏，
-并把每次发生写进日志（`screen-off.log` 的「⚠️ 内屏被拉回」）——既是保险，也是证据。
+**不再轮询显示状态（2026-10-12 去掉看门狗）**：熄屏期间只等「真人输入」或「手动恢复」，
+不再每 250ms 枚举显示配置、也不会发现内屏回来就重新 `displayswitch`（那会把屏幕与微信
+窗口来回折腾）。代价：若真有服务把内屏拉回来，这次不会再自动切黑 —— 再双击一次熄屏即可。
+（`_vdd_test2` 早前已排除 GameViewer 是元凶；真正会让内屏亮回来的是 `DisplaySwitch.exe`
+本身不退出，现在切换后照样会把它杀掉。）
 
 **稳定性实测（脚本本体）**：`screen-off.ps1 -Seconds 90` → 10:12:33 熄屏 → 10:14:16 恢复，
 **全程 103 秒零回退**；期间桥 / AstrBot / 微信全部在线。
@@ -317,8 +320,10 @@ scripts\screen-off.ps1 -NoOff      # 只体检，不熄屏
 scripts\screen-off.ps1 -Seconds 20 # 测试：20 秒后自动恢复
 ```
 
-保险机制：① 熄屏期间每 2 秒检查「内屏是否又被接上」，是就立刻重新切黑屏（并记日志
-`⚠️ 内屏被拉回`）；② 最多黑 10 小时自动恢复；③ 再次双击 `screen-off.cmd` = 请求恢复（即"开关"）；
+保险机制：① 熄屏期间**不轮询显示状态**（2026-10-12 去掉看门狗，避免屏幕被来回折腾）；
+② **永不自动恢复**（2026-10-12 改，旧行为是「最多黑 10 小时」）——
+只有真人碰鼠标/键盘、`-Restore`、群里的 `/gaon`、或再次双击 `screen-off.cmd` 才会亮屏；
+需要限时（测试）时显式传 `-Seconds N`；③ 再次双击 `screen-off.cmd` = 请求恢复（即"开关"）；
 ④ 驱动包缺失或切换失败时**明确报错并退出**（不会静默变成别的东西）。
 
 复现/诊断命令：`_diag_screen.ps1`（是否进连接待机）、`_vdd_diag.ps1`、`_probe_hook.ps1`（钩子与注入标志）。

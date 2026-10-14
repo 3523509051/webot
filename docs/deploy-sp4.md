@@ -274,7 +274,7 @@ Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Window
 Get-Content C:\webot\logs\screen-off.log -Encoding UTF8 -Tail 10
 ```
 
-- 日志应出现切换与恢复记录；若有 `⚠️ 内屏被拉回`，看 §10 对照表。
+- 日志应出现切换与恢复记录（`⚠️ 内屏被拉回` 那条看门狗日志已随 2026-10-12 的改动移除）。
 - **期间机器人收发不受影响** —— 可以让用户在群里 @ 一次做最终确认。
 
 ### 6.4 日常使用

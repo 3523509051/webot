@@ -347,7 +347,7 @@ if (Test-Path $stateFn) {
     if ($st.mode -eq 'virtual') {
         Write-Host ''
         Write-Host '  检测到处于虚拟屏熄屏状态，正在切回内屏…' -ForegroundColor Yellow
-        # 先让正在跑的那个实例退出，免得它的看门狗又把屏幕切黑
+        # 先让正在跑的那个实例退出，否则两个实例会互相抢显示配置
         Set-Content -Path $stopFn -Value 'stop' -Encoding UTF8
         Start-Sleep -Seconds 5
         Remove-Item $stopFn -Force -ErrorAction SilentlyContinue
@@ -441,7 +441,13 @@ if ($bridge.Count -eq 0 -or -not $astrbot) {
     Start-Sleep -Seconds 5
 }
 
-$maxSec = 600 * 60                          # 保险：最多 10 小时，超时自动恢复
+# 熄屏时长上限：默认 0 = **永不自动恢复** —— 只有三种情况会亮屏：
+#   ① 真人碰鼠标/键盘（机器人自己注入的事件已被过滤，不会误唤醒）
+#   ② 手动恢复：screen-off.ps1 -Restore / 群里的 /gaon
+#   ③ 再次双击 screen-off.cmd（= 手动恢复）
+# （2026-10-12 按用户要求改：原来是 600*60 = 10 小时「保险」上限，超时自动亮屏。）
+# 需要限时（测试用）时传 -Seconds N。
+$maxSec = 0
 if ($Seconds -gt 0) { $maxSec = $Seconds }
 
 # ── ① 虚拟屏：真黑 + 程序照跑 ───────────────────────────────
@@ -496,47 +502,31 @@ if ($chosen -eq 'virtual') {
 
 if ($chosen -eq 'virtual') {
 
-    # 等待真人输入；同时当看门狗 —— 实测有东西会把内屏"拉回来"（本机跑着网易
-    # GameViewerService/Server/Healthd，这类服务会自己维持显示配置）。
-    # 一旦发现内屏又被接上（= 亮屏），立刻再切一次，并把每次发生都记进日志（这就是证据）。
+    # 熄屏期间只余两件事：等真人输入、等手动恢复命令。**不再轮询显示状态**。
+    # （2026-10-12 按用户要求去掉看门狗：原来每 250ms 枚举一次显示配置，
+    #   发现内屏被拉回来就重新 displayswitch —— 会把屏幕/微信窗口来回折腾。
+    #   代价：若真有服务（如网易 GameViewerService 那类）把内屏拉回来，
+    #   这次不会再自动切黑，再双击一次熄屏即可。）
     $sw = [Diagnostics.Stopwatch]::StartNew()
     $reason = 'timeout'
-    $reassert = 0
-    # 钩子**常驻**（不每 2 秒拆装），循环里 DoEvents 泵消息 —— 真人输入不会漏检；
-    # 看门狗改用进程内的显示枚举（毫秒级），不再 spawn PowerShell。
+    # 钩子**常驻**，循环里 DoEvents 泵消息 —— 真人输入不会漏检。
     [WebotBlackout]::BeginWatch()
     try {
         while ($true) {
             [System.Windows.Forms.Application]::DoEvents()
             if ([WebotBlackout]::HumanSeen) { $reason = 'input'; break }
-            if ($sw.Elapsed.TotalSeconds -ge $maxSec) { $reason = 'timeout'; break }
-            # 外部要求停止（-Restore / 再次双击）—— 否则两个实例会互相打架：
-            # 一个切回内屏，另一个看门狗立刻又切黑
+            if ($maxSec -gt 0 -and $sw.Elapsed.TotalSeconds -ge $maxSec) { $reason = 'timeout'; break }
+            # 外部要求停止（-Restore / 再次双击）
             if (Test-Path $stopFn) {
                 Remove-Item $stopFn -Force -ErrorAction SilentlyContinue
                 $reason = 'closed'
                 break
-            }
-
-            $vddNow = [DispMode]::FindVirtual(1)
-            $internal = [DispMode]::AnyNonVirtualAttached()
-            if ((-not $vddNow) -or $internal) {
-                $reassert++
-                Write-Log ("  ⚠️ 内屏被拉回（虚拟屏在={0} 内屏在={1}）—— 第 {2} 次重新切到虚拟屏" -f `
-                    [bool]$vddNow, $internal, $reassert)
-                & displayswitch.exe /external | Out-Null
-                Start-Sleep -Seconds 3
-                Stop-Process -Name DisplaySwitch -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 1
-                $now = [DispMode]::FindVirtual(1)
-                if ($now) { [void][DispMode]::SetRes($now, $VddW, $VddH) }
             }
             Start-Sleep -Milliseconds 250
         }
     } finally {
         [WebotBlackout]::EndWatch()
     }
-    if ($reassert) { Write-Log ("  看门狗共重新切换 {0} 次" -f $reassert) }
 
     $why = if ($reason -eq 'input') { '真人输入（鼠标/键盘）' }
            elseif ($reason -eq 'closed') { '被恢复命令 / 再次双击停止' }
