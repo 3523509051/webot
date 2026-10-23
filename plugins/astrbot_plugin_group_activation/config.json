@@ -45,5 +45,9 @@
   "mention_max_count": 3,
   "image_look_max_per_turn": 10,
   "image_list_max_per_turn": 2,
-  "image_list_limit": 20
+  "image_list_limit": 20,
+  "image_history_max_turns": 4,
+  "image_history_max_chars": 6000,
+  "preflight_enable": true,
+  "preflight_timeout": 8.0
 }
