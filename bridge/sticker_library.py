@@ -22,13 +22,36 @@ _BAD = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
 
 class StickerLibrary:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, default_root: str | Path | None = None) -> None:
         self.root = Path(root)
         self.files = self.root / "files"
         self.manifest = self.root / "index.json"
+        self.default_root = (
+            Path(default_root)
+            if default_root is not None
+            else Path(__file__).resolve().parent.parent / "stickers" / "default"
+        )
         self._lock = threading.RLock()
         self.root.mkdir(parents=True, exist_ok=True)
         self.files.mkdir(parents=True, exist_ok=True)
+        self._seed_defaults()
+
+    def _seed_defaults(self) -> None:
+        """新设备运行时库为空时，把仓库里的默认表情复制进来。"""
+        try:
+            if self.manifest.is_file():
+                data = json.loads(self.manifest.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and data.get("items"):
+                    return
+            src_manifest = self.default_root / "index.json"
+            src_files = self.default_root / "files"
+            if not src_manifest.is_file() or not src_files.is_dir():
+                return
+            shutil.copy2(src_manifest, self.manifest)
+            shutil.copytree(src_files, self.files, dirs_exist_ok=True)
+        except Exception:
+            # 默认库只是锦上添花；失败不能阻止桥启动。
+            pass
 
     # ── manifest ─────────────────────────────────────
     def _load(self) -> dict:
