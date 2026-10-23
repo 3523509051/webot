@@ -23,6 +23,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -74,6 +75,11 @@ DEFAULT_CONFIG = {
         # （表情包本来就有 md5 缓存；图片不存的话，微信清理本地副本后引用就找不到）。
         # 0 = 关闭；默认留最近 200 张。
         "image_cache_keep": 200,
+        # 先发图、再问「这是什么」时，把上一条图补挂到追问上的有效期（秒）。
+        # 0 = 关闭。AstrBot 侧对纯图片事件不一定触发插件缓存，桥这里兜底。
+        "image_carry_seconds": 30.0,
+        # 一条回复最多转换几个真实 @（微信 @ 令牌要逐个用 UIA 点选）。
+        "max_mentions": 3,
     },
     # wechatauto_level=DEBUG 时会打出侧栏查找 / 兜底搜索 / open_chat 的细节，
     # 用于验证「已在目标群时不做切换」。零运行时开销（只是放行已有日志）。
@@ -86,6 +92,12 @@ DEFAULT_CONFIG = {
 
 # 微信 @ 之后会跟各种不可见空白（thin space / nbsp / 全角空格 等）
 MENTION_SPACES = r"[\s\u2005\u00a0\u3000\u2002\u2003\u2009\u202f]*"
+
+# 「先发图、再问图」的兜底：后一条纯文字里没有图片段，桥把上一条图补挂上去。
+# 只匹配确实在问图的说法，避免把「图书馆」之类误判成看图请求。
+IMAGE_QUERY = re.compile(
+    r"图|照片|截图|表情包|画面|看一下|看看|认一认|识别|读字|文字|上面写|这是什么"
+)
 
 
 def build_segments(text: str, bot_nicknames: list[str], self_id: int) -> list[dict]:
@@ -165,6 +177,59 @@ def find_mention(text: str, names: set[str]) -> tuple[str | None, str, str]:
     before = text[: m.start()].rstrip()
     after = text[m.end() :].lstrip()
     return name, before, after
+
+
+def parse_mentions(
+    text: str, names: set[str], max_count: int = 3
+) -> list[dict]:
+    """把正文里的 `@本群成员名` 解析成「文本 / @」交替的段。
+
+    与 find_mention 的区别：这里保留**所有** @（最多 max_count 个），
+    供桥逐个插入真实 @。返回例如：
+        [{"type":"text","text":"前半"},
+         {"type":"at","name":"小明"},
+         {"type":"text","text":"后半"}]
+    只认本群真实成员；同名只取第一次，重复的 @ 留作普通文字。
+    """
+    if not text or not names or "@" not in text:
+        return []
+    max_count = max(1, int(max_count or 1))
+    ordered = sorted((n for n in names if n), key=len, reverse=True)
+    if not ordered:
+        return []
+    pat = re.compile("@" + "(?:" + "|".join(re.escape(n) for n in ordered) + ")")
+    selected = []
+    seen: set[str] = set()
+    for m in pat.finditer(text):
+        name = m.group(0)[1:]
+        if name in seen:
+            continue
+        if len(selected) >= max_count:
+            break
+        seen.add(name)
+        selected.append(m)
+    if not selected:
+        return []
+
+    parts: list[dict] = []
+    pos = 0
+    for m in selected:
+        if m.start() > pos:
+            parts.append({"type": "text", "text": text[pos : m.start()]})
+        parts.append({"type": "at", "name": m.group(0)[1:]})
+        pos = m.end()
+    if pos < len(text):
+        parts.append({"type": "text", "text": text[pos:]})
+
+    # 去掉 @ 两侧多余空白（与 find_mention 的 rstrip/lstrip 保持一致）
+    for i, part in enumerate(parts):
+        if part["type"] != "text":
+            continue
+        if i > 0 and parts[i - 1]["type"] == "at":
+            part["text"] = part["text"].lstrip()
+        if i + 1 < len(parts) and parts[i + 1]["type"] == "at":
+            part["text"] = part["text"].rstrip()
+    return [p for p in parts if p["type"] != "text" or p["text"]]
 
 
 # 拿不到原始文件时的占位文本：至少让模型知道「这里有什么」。
@@ -596,6 +661,7 @@ async def main() -> int:
             log.debug("[屏幕] 切换后布局预热失败: %s", e)
 
     website_lock = asyncio.Lock()
+    max_mentions = max(1, int(cfg["wechat"].get("max_mentions", 3)))
 
     async def handle_action(action: str, params: dict):
         if action in ("read_website", "browser_search"):
@@ -643,6 +709,16 @@ async def main() -> int:
             return {"ok": True, "action": action}
         if action == "get_group_list":
             return [{"group_id": _fake_id(g["id"]), "group_name": g["name"]} for g in groups]
+        if action == "get_group_member_list":
+            # 给插件注入「本群所有可 @ 成员」用；只返回显示名（微信 @ 面板按名字选人）。
+            gid = params.get("group_id")
+            wxid = _wxid_of(gid)
+            if not wxid:
+                return []
+            return [
+                {"user_id": _fake_id(n), "nickname": n, "card": ""}
+                for n in sorted(wx.member_names(wxid))
+            ]
         if action == "can_send_image":
             return {"yes": True}
         if action == "can_send_record":
@@ -667,21 +743,26 @@ async def main() -> int:
                 )
                 raise ActionFailed("没有可发送的文字，或目标群不存在")
             # 模型写了 @某人 → 换成微信**真实 @**（对方会收到提醒）。
+            # 支持一条回复里 @ 多个人：桥按正文顺序「粘一段 → 插一个 @ → 再粘」。
             # 只有名字确实是本群成员时才走 @，否则按普通文本发。
-            # before/after 是 @ 的前后两段：@ 令牌要插在模型写的**原位置**，
-            # 不能补到结尾（否则句首的 @ 会糊到句尾，看起来就是「乱 @」）。
-            at_name, before, after = find_mention(
-                text, wx.member_names(_wxid_of(gid))
+            parts = parse_mentions(
+                text, wx.member_names(_wxid_of(gid)), max_mentions
             )
-            if at_name and (before.strip() or after.strip()):
+            at_names = [p["name"] for p in parts if p["type"] == "at"]
+            has_text = any(
+                p["type"] == "text" and p["text"].strip() for p in parts
+            )
+            if at_names and has_text:
                 log.info(
-                    "[发送@] %s -> %s: %s @ %s",
+                    "[发送@] %s -> %s（%d 个）: %s",
                     name,
-                    at_name,
-                    before[:40],
-                    after[:40],
+                    "、".join(at_names),
+                    len(at_names),
+                    text[:40],
                 )
-                ok = await asyncio.to_thread(wx.send_at, name, at_name, before, after)
+                ok = await asyncio.to_thread(
+                    wx.send_at_multi, name, parts
+                )
             else:
                 ok = await asyncio.to_thread(wx.send_text, name, text)
             if not ok:
@@ -799,6 +880,9 @@ async def main() -> int:
     interval = float(cfg["wechat"].get("poll_interval", 1.5))
     send_images = bool(cfg["wechat"].get("send_images", True))
     image_max_bytes = int(cfg["wechat"].get("image_max_bytes", 3_000_000))
+    # 先发图、再问图：按「群 + 发送者」记住最近一张图的消息段（含 base64）。
+    image_carry_seconds = float(cfg["wechat"].get("image_carry_seconds", 30.0) or 0)
+    last_images: dict[tuple[str, str], tuple[float, list[dict]]] = {}
     while True:
         for g in groups:
             try:
@@ -837,6 +921,21 @@ async def main() -> int:
                         continue
 
                     is_img = segments[0].get("type") == "image"
+                    if is_img and not m.get("is_self"):
+                        # 纯图片事件在 AstrBot 侧不一定能进插件缓存，桥这里先留一份，
+                        # 等同一人 30 秒内发「这是什么」时直接并进那条追问。
+                        last_images[(g["id"], m["sender_wxid"] or m["sender_name"])] = (
+                            time.time(),
+                            segments,
+                        )
+                        if image_carry_seconds > 0:
+                            now_ts = time.time()
+                            for k in [
+                                k
+                                for k, (ts, _) in last_images.items()
+                                if now_ts - ts > image_carry_seconds
+                            ]:
+                                last_images.pop(k, None)
                     log.info(
                         "[收到] %s / %s: <%s>",
                         g["name"],
@@ -877,6 +976,29 @@ async def main() -> int:
                 )
                 if not segments:
                     continue
+
+                # 「先发图、再问图」兜底：同一人刚才发过图，本条又在问图 →
+                # 把图补进这条消息。AstrBot 的纯图片事件不一定触发插件缓存，
+                # 这里让图片和追问走同一条事件，模型就不会再说「没收到图片」。
+                bare_at = any(s.get("type") == "at" for s in segments) and not any(
+                    s.get("type") == "text"
+                    and str(s.get("data", {}).get("text", "")).strip()
+                    for s in segments
+                )
+                if (
+                    image_carry_seconds > 0
+                    and (IMAGE_QUERY.search(m["text"] or "") or bare_at)
+                    and not any(s.get("type") == "image" for s in segments)
+                ):
+                    key = (g["id"], m["sender_wxid"] or m["sender_name"])
+                    hit = last_images.pop(key, None)
+                    if hit and time.time() - hit[0] <= image_carry_seconds:
+                        segments = segments + hit[1]
+                        log.info(
+                            "[图片跟随] %s / %s：已把上一条的图补挂到本条",
+                            g["name"],
+                            m["sender_name"],
+                        )
 
                 log.info(
                     "[上报] group=%s user=%s segments=%s",

@@ -57,12 +57,15 @@
 
 ### 新功能与升级
 
-当前版本 **v0.15.1**：后台必应浏览器搜索、高德天气与旅游路线、网页正文读取。网页读取上限提高到本实例所有群合计 **300 次/天**，失败也计数；浏览器搜索为 50 次/天，高德为 100 次/天，分别计数。
+当前版本 **v0.16.0**：支持一条回复 @ 多个群成员、@ 未发言成员、完整群成员名单；先图后问的桥侧兜底；后台必应浏览器搜索、高德天气与旅游路线、网页正文读取。
 
-已有服务器请按 [新功能升级指南](docs/upgrade-v0.15.1.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
+已有服务器请按 [新功能升级指南](docs/upgrade-v0.16.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
 ### 消耗控制
 
+- v0.16.0 多 @：模型在正文里写 `@昵称`，桥按顺序逐个用 UIA 点选插入真实 @（默认最多 3 个）。插件每次请求向桥拉取**完整群成员名单**，没发过言的成员也能被 @。相关配置：`mention_only_sender`、`mention_max_count`、`force_at_sender`，以及桥的 `wechat.max_mentions`。
+- v0.16.0 先图后问兜底：AstrBot 对纯图片事件不一定触发插件缓存时，桥按「群 + 发送者」缓存 30 秒；同一人随后问图时，把图并入同一条事件再上报。
+- v0.16.0 路径修正：脚本按仓库自身位置解析，不再硬编码 `C:\webot`；`webot-service.ps1` 从卸载注册表自动识别微信安装目录。
 - v0.15.1 网页读取每日上限从 20 次提高到 300 次，可通过 `website_daily_limit` 调整。
 - v0.15.0 后台 Playwright 浏览器搜索替代百度 API：默认必应网页版，真实打开页面并填写、提交搜索表单，提取结果链接和摘要；不需搜索 API Key，结果和最终回复均审核，保留 ping <300ms、额度和取消规则。
 - v0.14.4 移除搜索和网站读取的批次授权名单校验及对应提示；正常放行对话可自行查询并读取官网或搜索结果，无需逐批提供链接或放权。保留取消、额度、延迟和内容检查，天气仍走高德。
@@ -203,8 +206,9 @@ AMAP_WEB_KEY=
   要用天气、地点、路线才填。直接贴在 `=` 后面，不要加引号、不要留空格。
 - 保存后执行 `docker compose up -d --force-recreate astrbot` 让环境变量生效。
 
-> 下面所有命令都假设仓库在 `c:\webot`。放别处也能跑，但脚本里有 `c:\webot` 的默认路径，
-> 需要顺手改掉（`scripts\*.ps1`、`*.cmd`）。
+> 下面命令以仓库在 `c:\webot` 为例。仓库可以放在别处（例如 `D:\webot`）：
+> `scripts\webot-service.ps1` 会按自身位置推算仓库根，微信安装路径从卸载注册表自动识别；
+> 不再需要在脚本里手改 `c:\webot`。
 
 ### 2. 起 AstrBot（第一次要拉镜像）
 
@@ -337,7 +341,7 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 ```
 
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
-`[group_activation] 已加载 v0.15.1 …`
+`[group_activation] 已加载 v0.16.0 …`
 
 #### 4.1 插件参数（可选，按需改）
 
@@ -356,10 +360,14 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 | `merge_seconds` / `merge_max_seconds` | 5 / 30 | 碎片合并的静默等待 / 最长等待 |
 | `history_max_turns` / `history_max_chars` | 8 / 12000 | 原生多轮历史的上限 |
 | `image_carry_seconds` | 30 | 「先发图、再问图」的图片跟随窗口 |
-| `bot_names` | 你的机器人昵称 | 无内容消息「按名字判断」时用，**改成实际群昵称** |
-| `kb_enable` | true | L4 知识库；没装 Ollama 嵌入就设 `false`（不影响聊天） |
+| `mention_only_sender` | false | true = 只允许 @ 发送者、删除多余 @；false 才支持多 @ 和 @ 其他成员 |
+| `mention_max_count` | 3 | 一条回复最多保留几个 @（`mention_only_sender=false` 时生效），需与桥的 `wechat.max_mentions` 一致 |
+| `force_at_sender` | false | 被 @ 时是否强制回复开头 @ 发送者；false 由模型决定 |
+| `mention_max_names` | 12 | 注入给模型的可 @ 名单上限；群成员多于 12、目标不在名单时调大 |
+| `bot_names` | `[]` | 机器人昵称补充别名；通常留空，插件会从桥的 `get_login_info` 自动取 |
+| `kb_enable` | false | L4 知识库；本仓库默认关闭，装 Ollama 嵌入后改 `true`（不影响聊天） |
 | `search_enable` / `search_daily_limit` | true / 50 | 后台浏览器搜索与每日上限 |
-| `amap_enable` / `amap_daily_limit` | true / 100 | 高德工具与每日上限 |
+| `amap_enable` / `amap_daily_limit` | false / 100 | 高德工具与每日上限；填 `AMAP_WEB_KEY` 后改 `true` |
 | `website_enable` / `website_daily_limit` | true / 300 | 网页正文读取与每日上限 |
 | `ignore_prefixes` | `["/"]` | 以这些前缀开头的消息不参与 |
 
@@ -444,6 +452,8 @@ notepad config.json
 | `wechat.image_max_edge` | 1280 | 长边像素上限，控制视觉 token；`0` 关闭缩放 |
 | `wechat.fetch_stickers` | true | 表情包当图片处理（只取第一帧） |
 | `wechat.image_cache_keep` | 200 | 本地图片缓存保留张数，供引用旧图时找回 |
+| `wechat.image_carry_seconds` | 30 | 桥侧「先图后问」兜底窗口；0 = 关闭 |
+| `wechat.max_mentions` | 3 | 一条回复最多转换几个真实 @；需与插件 `mention_max_count` 一致 |
 | `website.enabled` | true | 网页读取 / 后台搜索总开关 |
 | `website.search_engine` | `bing` | `bing` 或 `baidu`（网页版，不需要 API Key） |
 | `website.restrict_domains` | false | 是否启用域名白名单 |
@@ -495,7 +505,33 @@ notepad config.json
 - **微信窗口**：桥发送时会自己切会话、把微信窗口切到前台，属正常现象；
   期间**不要锁屏**，否则 UIA 点击和键入会失败。
 
-### 6. 验证（按顺序做四条）
+#### 5.6 指名回复与多 @
+
+模型不直接操作微信 @ 面板，它只在正文里写 `@昵称`；桥负责把文字变成真实 @：
+
+1. 桥从正文里按群成员显示名找出 `@昵称`（最多 `wechat.max_mentions` 个）；
+2. 按正文顺序：粘前段 → 键入 `@` → 等成员弹层 → 鼠标点选该成员 → 粘下一段；
+3. 一条回复可以 @ 多个成员，默认最多 3 个；没发过言的成员也能被 @。
+
+相关开关：
+
+- 插件 `mention_only_sender=false`：允许多 @ / @ 其他成员；设为 `true` 会退回「只 @ 本条发送者并删除多余 @」。
+- 插件 `mention_max_count` 与桥 `wechat.max_mentions`：两边要一致，默认 3。
+- 插件 `force_at_sender=false`：不强制回复开头 @ 发送者，由模型决定。
+- 插件 `mention_max_names`：注入给模型的名单上限，默认 12；群成员多时把目标挤掉就调大。
+
+> ⚠️ 桥只解析**正文文本**里的 `@昵称`。如果模型使用 AstrBot 的
+> `send_message_to_user` 工具发正文，`plain` 文本里也必须写 `@昵称`；
+> 只填工具参数里的 `mention_user_id` 不会生效（桥拿不到显示名，会丢掉结构化 at 段）。
+
+失败时：某个 @ 点选失败，桥会清空输入框、去掉 @ 名字按纯文字发送，日志写
+`@=没成→去掉@按纯文字发`；不会出现「@ 到一半」的畸形消息。成功时日志形如：
+
+```
+[发送@] 测试群 -> NULL、NONE（UIA 6.55s, 路径=direct, @=成, 共2个）
+```
+
+### 6. 验证（按顺序做五条）
 
 微信停在目标群、不锁屏，然后：
 
@@ -506,6 +542,8 @@ notepad config.json
 3. **先图后问**：先单发一张图（不 @），30 秒内再发 `这张图里写了什么`
    → 只回一条，且带图。
 4. **记忆**：先聊两句，再 `@你的机器人 刚才我们说到哪了` → 能接上上下文。
+5. **多 @ / 转告**：`@你的机器人 你查一下高斯生平，然后告诉NULL，同时也提醒我待会查山姆生平`
+   → 回复里 `@NULL` 和 `@NONE` 两段都有正文；桥日志出现 `共2个`。
 
 失败时按顺序定位：
 

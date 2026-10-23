@@ -12,7 +12,9 @@
     "groups": {},
     "self_wxid": "",
     "image_max_edge": 1280,
-    "db_dir": ""
+    "db_dir": "",
+    "max_mentions": 3,
+    "image_carry_seconds": 30.0
   },
   "website": {
     "enabled": true,
