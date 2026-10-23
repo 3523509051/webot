@@ -37,6 +37,12 @@ stickers/index.json
 stickers/*.tmp
 stickers/*.broken-*.json
 
+# 本地文件库（群文件是运行数据）
+files/files/
+files/index.json
+files/*.tmp
+files/*.broken-*.json
+
 # 微信数据库密钥缓存（正常情况下在 %TEMP%，兜底忽略）
 keys.json
 *keys*.json

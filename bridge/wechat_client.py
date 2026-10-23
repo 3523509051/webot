@@ -813,6 +813,42 @@ class WeChatClient:
         self._self_image_echo_until.pop(group_name, None)
         return True
 
+    def download_file(
+        self, group_id: str, local_id, filename: str | None = None,
+        attempts: int = 6, delay: float = 0.8,
+    ) -> str | None:
+        """把微信收到的文件还原成本地文件；失败返回 None。
+
+        微信 4.1 的文件消息有时用 local_id 查不到 49 类型行，且文件往往比
+        消息晚约 1 秒才落到 `msg/file/YYYY-MM/<原名>`；按文件名轮询重试。
+        """
+        try:
+            found = self._media().download_file(group_id, local_id)
+            if found:
+                return found
+        except Exception as e:  # noqa: BLE001
+            log.debug("标准文件下载失败（%s / local_id=%s）: %s", group_id, local_id, e)
+        name = Path(str(filename or "")).name
+        if not name:
+            return None
+        base = Path(str(getattr(self.db, "account_dir", ""))) / "msg" / "file"
+        for attempt in range(max(1, int(attempts))):
+            try:
+                hits = [p for p in base.rglob(name) if p.is_file()]
+                if hits:
+                    hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                    log.info(
+                        "[文件] 按文件名找到本地副本：%s（第 %d 次）",
+                        hits[0],
+                        attempt + 1,
+                    )
+                    return str(hits[0])
+            except Exception as e:  # noqa: BLE001
+                log.warning("按文件名找文件失败（%s）: %s", name, e)
+            if attempt + 1 < attempts:
+                time.sleep(delay)
+        return None
+
     def _paste_image_fast(self, box, path: str) -> bool:
         """快速粘贴图片：复用输入框，草稿只等 2 秒，失败回退标准路径。"""
         try:
@@ -1070,11 +1106,10 @@ class WeChatClient:
             if not lst.Exists(1.5, 0.2):
                 log.info("UIA @ 弹层里没有列表控件")
                 return False
-            target, seen = self._find_mention_item(lst, member)
+            # 单格滚动找目标；找到后 ScrollIntoView 再点，避免一次滚 3 格
+            # 把候选头像顶出可视区，点击落到列表外。
+            target, seen = self._find_mention_item(lst, member, max_rounds=12)
             if target is None:
-                # 兜底：把名字打进输入框，微信弹层会**实时过滤**出匹配的人。
-                # 成员多时列表是虚拟化的，滚轮什么时候「到底」不好判断；
-                # 过滤是微信自己的搜索，比遍历可靠。
                 target = self._filter_to_member(uia, edit, lst, member)
             if target is None:
                 log.info(
@@ -1084,6 +1119,15 @@ class WeChatClient:
                     seen[:8],
                 )
                 return False
+            try:
+                import uiautomation as auto
+
+                pattern = target.GetPattern(auto.PatternId.ScrollItemPattern)
+                if pattern:
+                    pattern.ScrollIntoView()
+                    time.sleep(0.2)
+            except Exception as e:  # noqa: BLE001
+                log.debug("UIA @ ScrollIntoView 失败: %s", e)
             target.Click()
             time.sleep(0.3)
             return True
@@ -1165,12 +1209,14 @@ class WeChatClient:
                 return target, seen
             if r and not fresh:
                 break  # 滚过一轮后没有新名字 = 到底了，别白转
+            if r + 1 >= max_rounds:
+                break  # 首屏/最后一轮不滚，避免把头像顶出可视区
             try:
-                lst.WheelDown(wheelTimes=3, waitTime=0.05)
+                lst.WheelDown(wheelTimes=1, waitTime=0.05)
             except Exception as e:  # noqa: BLE001
                 log.debug("UIA @ 弹层滚动失败: %s", e)
                 break
-            time.sleep(0.25)
+            time.sleep(0.15)
         return None, seen
 
     def _uia_send_at(

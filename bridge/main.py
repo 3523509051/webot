@@ -33,7 +33,9 @@ from wechat_client import (WeChatClient, cached_image, cached_image_by_time,
                            cached_sticker)
 from safe_browser import read_website
 from browser_search import browser_search
+from wechat_article import read_wechat_article, is_wechat_article
 from sticker_library import StickerLibrary
+from file_library import FileLibrary
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 
@@ -44,6 +46,7 @@ log = logging.getLogger("bridge")
 
 # 表情库是本地数据，不进 Git；路径固定在仓库根目录的 stickers/。
 STICKERS = StickerLibrary(Path(__file__).resolve().parent.parent / "stickers")
+FILE_LIBRARY = FileLibrary(Path(__file__).resolve().parent.parent / "files")
 
 DEFAULT_CONFIG = {
     "astrbot": {
@@ -300,11 +303,14 @@ def parse_appmsg(text: str) -> dict | None:
     # 只在被引用消息块里找，避免和外层同名标签混淆
     refer = _xml_tag(text, "refermsg")
     refer_body = _xml_tag(refer, "content") if refer else ""
+    refer_unescaped = html.unescape(refer_body).strip() if refer_body else ""
     refer_md5 = None
     refer_content = ""
+    refer_title = ""
+    refer_url = ""
     refer_time = _xml_tag(refer, "createtime") if refer else ""
     if refer_body:
-        mm = re.search(r'md5="([0-9a-fA-F]{32})"', refer_body)
+        mm = re.search(r'md5="([0-9a-fA-F]{32})"', refer_unescaped)
         if mm:
             refer_md5 = mm.group(1).lower()
         else:
@@ -312,25 +318,37 @@ def parse_appmsg(text: str) -> dict | None:
             #   wxid_xxx:1792116875436:1:fb0dbcea25affabed88336bb23f520d1::0
             # 第 2 段是毫秒时间戳、第 4 段就是 md5。以前这串 ID 被当成正文喂给模型，
             # 于是「引用一张表情包问这是啥」只能看到一串 ID（2026-10-16 实测）。
-            im = _REFER_ID_RE.match(refer_body.strip())
+            im = _REFER_ID_RE.match(refer_unescaped)
             if im:
                 refer_md5 = im.group(2).lower()
                 ts = im.group(1)
                 refer_time = refer_time or (str(int(ts) // 1000) if len(ts) > 10 else ts)
-            elif not refer_body.lstrip().startswith("<"):
+            elif refer_unescaped.startswith("<"):
+                # 引用的是链接/文件卡片：content 是转义后的 appmsg XML。
+                # 必须解析出完整 <url>；以前把它当纯文本再 [:100] 截断，
+                # 公众号长链接就只剩 https://mp.weixin.qq.c。
+                refer_title = _xml_tag(refer_unescaped, "title")
+                refer_url = html.unescape(
+                    _xml_tag(refer_unescaped, "url")
+                    or _xml_tag(refer_unescaped, "shareUrlOpen")
+                    or _xml_tag(refer_unescaped, "shareUrlOriginal")
+                    or ""
+                ).strip()
+            else:
                 # 纯文本引用：**把被引用的原话带出来**。
-                # 为什么必须带：之前只带「（引用 X 的消息）」，模型看不到原文 ——
-                # 实测对方引用一句旧话问「这句话」，机器人只能答「我只看到『这句话』
-                # 三个字，原话没捞上来」（2026-10-08）。引用图片时这里是一段 XML，
-                # 图片另有 md5 通道，跳过。
-                refer_content = html.unescape(refer_body).strip()
+                refer_content = refer_unescaped
     return {
         "kind": APPMSG_LABELS.get(_xml_tag(text, "type"), "卡片"),
         "title": _xml_tag(text, "title"),
         "des": _xml_tag(text, "des"),
+        "url": html.unescape(
+            _xml_tag(text, "url") or _xml_tag(text, "dataurl") or ""
+        ).strip(),
         "refer_author": _xml_tag(refer, "displayname") if refer else "",
         "refer_md5": refer_md5,
         "refer_content": refer_content,
+        "refer_title": refer_title,
+        "refer_url": refer_url,
         "refer_time": refer_time,
     }
 
@@ -380,6 +398,38 @@ def parse_record_items(raw: str) -> list[dict]:
             "src_time": tag("srcMsgCreateTime") or tag("sourcetime"),
         })
     return items
+
+
+def file_segments(m: dict, group_id: str, wx, raw: str) -> list[dict]:
+    """文件消息：白名单校验 → 下载 → 入库；不把二进制送给模型。"""
+    info = parse_appmsg(raw) or {}
+    name = (info.get("title") or "").strip() or "file"
+    verdict, reason = FILE_LIBRARY.classify(name)
+    if verdict != "accept":
+        log.info("[文件] 拒收 %s：%s", name, reason)
+        return [{"type": "text", "data": {"text": f"[文件] {name}（拒收：{reason}）"}}]
+    path = wx.download_file(group_id, m.get("local_id"), name)
+    if not path:
+        log.info("[文件] 未找到本地副本：%s", name)
+        return [{"type": "text", "data": {"text": f"[文件] {name}（未收到完整文件，未入库）"}}]
+    try:
+        item = FILE_LIBRARY.add(
+            path,
+            name,
+            group=group_id,
+            sender=str(m.get("sender_name") or ""),
+            source_local_id=m.get("local_id"),
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("[文件] 入库失败 %s：%s", name, e)
+        return [{"type": "text", "data": {"text": f"[文件] {name}（未入库：{e}）"}}]
+    log.info("[文件] 已入库 #%s（%s，%d 字节）", item["id"], item["name"], item["size"])
+    return [{
+        "type": "text",
+        "data": {
+            "text": f"[文件 #{item['id']}] {item['name']}（已存入文件库，可用 list_files / read_file 按需读取）"
+        },
+    }]
 
 
 def card_segments(
@@ -451,7 +501,13 @@ def card_segments(
     if info["kind"] == "引用回复":
         if info["refer_author"]:
             what = "图片" if info["refer_md5"] else "消息"
+            refer_url = (info.get("refer_url") or "").strip()
+            refer_title = (info.get("refer_title") or "").strip()
             quoted = (info.get("refer_content") or "").replace("\n", " ").strip()
+            if refer_url:
+                quoted = f"{refer_title}（{refer_url}）".strip()
+            elif refer_title:
+                quoted = refer_title
             if missing_image:
                 # 不要把「找不到」留白让模型自己猜：它会拿最近一张图顶上，
                 # 实测会把别的图说成被引用的图（2026-10-23）。
@@ -460,9 +516,11 @@ def card_segments(
                     f"但本机没有找到原图，无法查看；不要猜测内容）{title}"
                 )
             elif quoted:
+                # 链接必须完整保留；只有普通文字引用才截到 100 字。
+                shown = quoted if refer_url else quoted[:100]
                 title = (
                     f"（引用 {info['refer_author']} 的{what}："
-                    f"「{quoted[:100]}」）{title}"
+                    f"「{shown}」）{title}"
                 )
             else:
                 title = f"（引用 {info['refer_author']} 的{what}）{title}"
@@ -500,6 +558,8 @@ def card_segments(
         label = f"[{info['kind']}] {title}".strip()
         if info["des"]:
             label += f" — {info['des'][:120]}"
+        if info.get("url"):
+            label += f"\nURL: {info['url'][:1200]}"
         segs.append({"type": "text", "data": {"text": label}})
     return segs
 
@@ -621,9 +681,13 @@ def build_media_segments(
                 log.warning("表情包取图异常（local_id=%s）: %s", m.get("local_id"), e)
         return [{"type": "text", "data": {"text": "[表情包]"}}]
 
-    if "卡片" in mtype or "链接" in mtype:
+    if "卡片" in mtype or "链接" in mtype or "文件" in mtype:
+        raw_card = m.get("text") or ""
+        info = parse_appmsg(raw_card)
+        if info and info.get("kind") == "文件":
+            return file_segments(m, group_id, wx, raw_card)
         return card_segments(
-            m.get("text") or "", group_id, wx, max_bytes, nicknames, self_id
+            raw_card, group_id, wx, max_bytes, nicknames, self_id
         )
 
     for key, placeholder in MEDIA_PLACEHOLDER.items():
@@ -774,7 +838,10 @@ async def main() -> int:
             async with website_lock:
                 if action == "browser_search":
                     return await browser_search(params.get("query", ""), cfg.get("website") or {}, params.get("top_k", 6))
-                return await read_website(params.get("url", ""), cfg.get("website") or {})
+                url = params.get("url", "")
+                if is_wechat_article(url):
+                    return await read_wechat_article(url)
+                return await read_website(url, cfg.get("website") or {})
         if action == "get_login_info":
             return {"user_id": cfg["astrbot"].get("self_id", 10001), "nickname": wx.self_name}
         if action == "get_version_info":
@@ -1020,6 +1087,58 @@ async def main() -> int:
                 "sent_text": bool(outcome.get("sent_text")),
                 "sticker_id": item["id"],
                 "name": item.get("name") or "",
+            }
+        if action == "list_files":
+            gid = params.get("group_id")
+            wxid = _wxid_of(gid)
+            if not wxid:
+                return {"ok": False, "error": "group_not_found"}
+            try:
+                limit = int(params.get("limit") or 20)
+            except (TypeError, ValueError):
+                limit = 20
+            return {
+                "ok": True,
+                "items": FILE_LIBRARY.list(
+                    wxid,
+                    query=str(params.get("query") or ""),
+                    ext=str(params.get("ext") or ""),
+                    limit=limit,
+                ),
+            }
+        if action == "read_file":
+            gid = params.get("group_id")
+            wxid = _wxid_of(gid)
+            if not wxid:
+                return {"ok": False, "error": "group_not_found"}
+            item = FILE_LIBRARY.get(
+                str(params.get("file_id") or "").strip(), wxid
+            )
+            if not item:
+                return {"ok": False, "error": "file_not_found"}
+            try:
+                payload = Path(item["path"]).read_bytes()
+            except OSError as e:
+                return {"ok": False, "error": f"read_failed: {e}"}
+            try:
+                text = payload.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    text = payload.decode("gb18030")
+                except UnicodeDecodeError:
+                    text = payload.decode("utf-8", errors="replace")
+            try:
+                max_chars = max(1, min(int(params.get("max_chars") or 12000), 20000))
+            except (TypeError, ValueError):
+                max_chars = 12000
+            truncated = len(text) > max_chars
+            return {
+                "ok": True,
+                "id": item["id"],
+                "name": item["name"],
+                "size": item["size"],
+                "content": text[:max_chars],
+                "truncated": truncated,
             }
         if action == "can_send_image":
             return {"yes": True}

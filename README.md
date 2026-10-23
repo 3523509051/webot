@@ -57,12 +57,14 @@
 
 ### 新功能与升级
 
-当前版本 **v0.19.0**：新增本地表情库，AI 可检索、发送、入库表情图片（图片气泡）；文字+表情用 `[[表情:...]]` 标记一次 API 完成，发送顺序固定文字→图片；窗口 preflight、@+引用图策略、图片 L1 编号、L2 压缩等沿用 v0.18.0。
+当前版本 **v0.20.0**：新增本地文件库，接收 md/c/cpp 等文本代码文件，AI 用 `list_files` / `read_file` 按需读取；`.bat` / `.exe` / 压缩包直接拒收。微信链接卡片上报完整 URL，公众号文章可读；引用链接不再截断。表情库、文字+表情标记、窗口 preflight 等沿用 v0.19.0。
 
-已有服务器请按 [新功能升级指南](docs/upgrade-v0.19.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
+已有服务器请按 [新功能升级指南](docs/upgrade-v0.20.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
 ### 消耗控制
 
+- v0.20.0 本地文件库：`D:\webot\files` 保存文本/代码文件和 `index.json`；收到文件只记 `[文件 #f_0001]`，不把内容塞进 L1/L2。AI 需要时用 `list_files` 找编号、`read_file` 读取（默认 12000 字，最大 20000）。`.bat`、`.exe`、`.ps1`、压缩包等拒收；单文件上限 5MB。
+- v0.20.0 微信链接：链接卡片带完整 URL，AI 用 `read_website` 按需读取；`mp.weixin.qq.com` 专用解析 `#js_content`；引用链接解析 `<refermsg>` 的完整 `<url>`，不截断。
 - v0.19.0 本地表情库：`D:\webot\stickers` 保存图片与 `index.json`；`list_stickers` 按情绪/场景/关键词检索，`send_sticker` 用 `gui.send_image` 发图片气泡，`save_sticker` 把本群缓存图片正式入库并让 AI 命名、打标签。每条回复最多发 1 张、入库 1 张；同图 sha256 去重，不覆盖不删除。
 - v0.18.0 接话 preflight：@ 后的 30 秒窗口内，非 @、非明确请求的**纯文字**批次先用 L1 + 本批 + 机器人上一句判定；PASS 直接停止，不调用完整模型；JOIN 才带 L2/L3/L4 回答。@ 和明确请求直接完整回答，不加分类延迟。
 - v0.18.0 窗口图片：只有 **@ + 引用图片** 自动附图；@ 配新图、窗口期非 @ 图都只保留 `[图片 #ID]`，模型需要时调用 `look_image`。
@@ -354,7 +356,7 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 ```
 
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
-`[group_activation] 已加载 v0.19.0 …`
+`[group_activation] 已加载 v0.20.0 …`
 
 #### 4.1 插件参数（可选，按需改）
 
@@ -613,6 +615,39 @@ D:\webot\stickers\
 - `save_sticker(image_id, name, emotion, scenes, tags, description)`：把本群缓存图正式入库，AI 命名/打标签；同图 sha256 去重，不覆盖不删除；
 - 每条回复最多发 1 张、入库 1 张（`sticker_send_max_per_turn` / `sticker_save_max_per_turn`）；
 - 图片和 `index.json` 不进 Git，详见 [stickers/README.md](stickers/README.md)。
+
+#### 5.11 本地文件库（v0.20.0）
+
+目录：
+
+```text
+D:\webot\files\
+  index.json
+  files\f_0001_test.md
+```
+
+- 接收到文本/代码文件后，桥只上报 `[文件 #f_0001] test.md`，**不把文件内容塞进 L1/L2/L3**；
+- AI 需要时：
+  1. `list_files(query?, ext?, limit?)` 按文件名/后缀/发送者找编号；
+  2. `read_file(file_id, max_chars=12000)` 按需读取，最大 20000 字；超出会标“内容已截断”；
+- 只接收文本/代码类：`.md`、`.c`、`.h`、`.cpp`、`.py`、`.js`、`.json`、`.yaml` 等；
+- **拒收** `.bat`、`.cmd`、`.ps1`、`.exe`、`.dll`、`.sh`、压缩包（zip/rar/7z/tar/gz 等）；
+- 单文件上限 5MB；文件内容是不可信资料，AI 不执行其中代码；
+- 文件下载依赖微信本地副本；未完整下载时只记“未收到完整文件”，不入库；
+- 文件本身和 `index.json` 不进 Git，详见 [files/README.md](files/README.md)。
+
+#### 5.12 微信链接与公众号文章（v0.20.0）
+
+- 微信链接卡片现在会上报标题和**完整 URL**：
+  ```text
+  [链接] 标题 — 描述
+  URL: https://mp.weixin.qq.com/s/...
+  ```
+- AI 需要看内容时调用 `read_website(url=...)`，不会自动抓取每个链接；
+- 引用链接时，桥解析 `<refermsg>` 内转义后的完整 `<url>`，不再把引用 XML 当文本截断，所以“引用 + 这个”能带上完整链接；
+- `mp.weixin.qq.com` 走专用只读抓取，直接 HTTP 读取并解析 `#js_content`，不依赖微信登录；
+- 仍读不到的情况：微信验证页/登录页、纯 JS/视频页、链接本身 404、分享链接缺少应用子路径（如 `/app/app_xxx/`）；AI 会说明失败原因，不猜正文；
+- 公众号只读文字，不读取文章内图片。
 
 ### 6. 验证（按顺序做六条）
 
