@@ -7,6 +7,9 @@
 > 请用**小号**、别刷屏营销，并对账号风险有心理准备（详见文末《红线与安全》）。
 > 仅供个人学习与研究使用。
 
+> 🚀 **第一次安装**：从「前置条件」开始，按部署 §0 → §8 顺序做。
+> 只想查 **API Key 怎么填** → §3.2；**桥怎么用/怎么排错** → §5.4、§5.5。
+
 ---
 
 ## 它能做什么
@@ -86,15 +89,55 @@
 
 ## 前置条件（先把这些准备好）
 
+### 软硬件清单
+
 | 项 | 要求 | 说明 |
 |---|---|---|
 | 系统 | **Windows 10/11 64 位** | 桥依赖微信 Windows 客户端与 UIA，Linux/macOS 跑不了 |
 | 微信 | **桌面版 4.1.12+**（本项目在 **4.1.15.13** 上实测） | ⚠️ 密钥提取依赖该版本的 DLL 特征码，**换版本可能要等上游适配** |
 | Python | **64 位 3.9+**（实测 3.11） | 只给桥用；AstrBot 在容器里，不需要本机 Python |
+| Git | 任意近期版本 | 拉代码、后续更新用 |
 | 容器 | **Docker Desktop + WSL2** | 见下方 §0；也可用 Docker Engine（WSL2 里） |
+| 浏览器 | **Microsoft Edge** | 后台搜索与网页读取走本机 Edge（Playwright `msedge` 通道） |
 | 内存 | 建议 **8 GB 以上** | AstrBot + 微信 + 桥约 3–5 GB；用本地嵌入（L4）再加约 2 GB |
 | 模型 | 任一 **OpenAI 兼容 API**（示例 DeepSeek） | 需支持**多模态**才能看图/表情包；Key 填在 WebUI |
 | 账号 | **建议专用小号** | 见《红线与安全》 |
+
+### 需要准备哪些 Key（只有模型 Key 必填）
+
+| 用途 | 是否必需 | 填写位置 |
+|---|---|---|
+| 对话模型 / 看图模型 | **必需** | AstrBot WebUI →「服务提供商」 |
+| 高德 Web 服务 Key | 可选（要用天气、地图、路线才填） | 仓库根目录 `.env` 的 `AMAP_WEB_KEY`，然后重建容器 |
+| 搜索 API Key | **不需要** | 搜索走本机 Edge 打开必应网页版，不调用付费搜索 API |
+| 嵌入模型（L4 知识库） | 可选 | 本机 Ollama + `bge-m3`，在面板加一个嵌入 Provider，详见 §8 |
+
+### 装软件并验证
+
+**Git 与 Python**（普通 PowerShell，不需要管理员）：
+
+```powershell
+winget install -e --id Git.Git
+winget install -e --id Python.Python.3.11 --accept-package-agreements --accept-source-agreements
+```
+
+装 Python 时务必勾选 **Add python.exe to PATH**。装完**新开一个** PowerShell 验证：
+
+```powershell
+git --version
+python --version
+python -c "import struct;print('64 位，可用' if struct.calcsize('P')==8 else '32 位，必须换成 64 位')"
+```
+
+> 32 位 Python 装不上 `wechatauto-replica` 的依赖，必须是 64 位。
+> 如果 `python` 指向 Microsoft Store 的占位程序，用 `py -3.11 --version` 确认，
+> 并在后续命令里把 `python` 换成 `py -3.11`。
+
+**Windows 上的两个必要设置**（否则机器人会静默掉线）：
+
+1. **不要锁屏**：设置 → 个性化 → 锁屏界面 → 屏幕保护程序 → 取消「在恢复时显示登录屏幕」，并且**不要按 Win+L**。
+2. **不要睡眠**：设置 → 系统 → 电源 → 屏幕和睡眠 → 「使设备进入睡眠状态」设为**从不**（接电源时）。
+   屏幕可以关（用 §7 的虚拟显示器方案），但**不能锁屏、不能睡眠、不能注销**。
 
 ---
 
@@ -137,39 +180,147 @@ docker compose version
 或 WSL 内核太旧 —— `wsl --update` 后重试。
 </details>
 
-### 1. 取代码
+### 1. 取代码与建 `.env`
 
 ```powershell
 git clone https://github.com/3523509051/webot.git c:\webot
 cd c:\webot
-copy .env.example .env        # 可选：改端口/时区用；LLM Key 不在这里
+copy .env.example .env
 ```
+
+`.env` 只有三件事，**LLM 的 API Key 不在这里**：
+
+```ini
+TZ=Asia/Shanghai
+ASTRBOT_WEB_PORT=6185
+ONEBOT_WS_PORT=6199
+AMAP_WEB_KEY=
+```
+
+- `ASTRBOT_WEB_PORT`：面板端口；`ONEBOT_WS_PORT`：桥连的端口。改了端口要同步改
+  `.env`、面板里的 aiocqhttp 端口、`bridge\config.json` 的 `astrbot.ws_url` 三处。
+- `AMAP_WEB_KEY`：可选，高德**「Web服务」**类型的 Key（不是 JS API / 地图 Key），
+  要用天气、地点、路线才填。直接贴在 `=` 后面，不要加引号、不要留空格。
+- 保存后执行 `docker compose up -d --force-recreate astrbot` 让环境变量生效。
 
 > 下面所有命令都假设仓库在 `c:\webot`。放别处也能跑，但脚本里有 `c:\webot` 的默认路径，
 > 需要顺手改掉（`scripts\*.ps1`、`*.cmd`）。
 
-### 2. 起 AstrBot
+### 2. 起 AstrBot（第一次要拉镜像）
 
 ```powershell
 cd c:\webot
 docker compose up -d astrbot
 docker compose ps
-docker logs --tail 50 webot-astrbot     # 会打印面板初始账号与密码
+docker logs --tail 80 webot-astrbot
+```
+
+首次会下载 `soulter/astrbot:latest`，视网络几分钟到十几分钟。`docker compose ps` 里
+`STATUS` 出现 `Up` 才继续。
+
+**拿面板账号密码**（首次启动才有）：
+
+```powershell
+docker logs webot-astrbot 2>&1 | Select-String -Pattern "账号|密码|username|password"
 ```
 
 - 面板：<http://localhost:6185>
+- 用户名通常是 `astrbot`；密码默认 `astrbot`，**新版镜像会生成随机初始密码并打印在首次启动日志里**，
+  以日志为准。登录后到「设置 / 账户」里改成自己的密码。
 - OneBot 反向 WS 端口：**6199**（桥会连这里）
+- 如果忘了密码：先试面板登录页的「忘记密码 / 重置」流程；不行就
+  `docker compose stop astrbot`，删除 `data\astrbot\cmd_config.json` 里的 `dashboard` 段再启动，
+  让面板重新初始化 —— **会丢面板配置，删前先备份**。
 
-### 3. 面板里配三件事
 
-| 项 | 值 |
+
+### 3. 面板配置（消息平台 / API Key / 人格）
+
+浏览器打开 <http://localhost:6185>，用 §2 拿到的账号密码登录。下面三块按顺序配。
+
+#### 3.1 消息平台：加一个 aiocqhttp
+
+面板 → **消息平台** → 新增 → 选 **aiocqhttp（OneBot v11）**：
+
+| 配置项 | 填什么 | 说明 |
+|---|---|---|
+| 平台名称 / ID | `webot` | 任意唯一名字 |
+| 启用 | 开 | |
+| 反向 WebSocket 主机 | `0.0.0.0` | **必须 0.0.0.0**，写 `127.0.0.1` 容器外连不上 |
+| 反向 WebSocket 端口 | `6199` | 与 `.env` 的 `ONEBOT_WS_PORT` 一致 |
+| Token | 留空 | 若填了，桥的 `config.json` 里 `astrbot.token` 必须**一模一样** |
+| 心跳间隔 | `15` | 与桥默认值一致即可 |
+
+**只建一个实例**：重复的 aiocqhttp 平台会让同一条消息被处理两次（群里会看到双回复）。
+
+保存后确认适配器起来了：
+
+```powershell
+docker logs --tail 30 webot-astrbot
+```
+
+看到 aiocqhttp 启动、监听 `6199` 即可。桥还没启动时这里没有客户端连接，属正常。
+
+#### 3.2 服务提供商：API Key 怎么填（重点）
+
+需要准备一个 **OpenAI 兼容**的接口。以 DeepSeek 为例：
+
+1. 打开 <https://platform.deepseek.com> → 登录 → **API keys** → 创建 → 复制 `sk-...`
+   （**只显示一次**，先存到密码管理器）。
+2. 面板 → **服务提供商** → 新增 → 类型选 **OpenAI / OpenAI 兼容**。
+3. 按下表填（不同面板版本字段名略有差异，认准「API Base / API Key / 模型」三项）：
+
+| 字段 | 值 |
 |---|---|
-| **消息平台** | 新增 **aiocqhttp**（OneBot v11）：反向 WS 端口 `6199`，host `0.0.0.0`，token 可留空 |
-| **服务提供商** | 新增你的模型（示例 DeepSeek）：`api_base = https://api.deepseek.com/v1`，模型 `deepseek-flash`，思考模式**关闭** |
-| **人格 / 回复风格** | 按你的口味写；本仓库不固化人格 |
+| 名称 | `deepseek`（随意，自己认得出即可） |
+| API Base URL | `https://api.deepseek.com/v1` |
+| API Key | `sk-...`（整段粘贴，**前后不要有空格或换行**） |
+| 模型 / 模型 ID | `deepseek-flash`（以你控制台实际开通的为准） |
+| 思考 / 推理模式 | **关闭**（群聊要的是低延迟） |
+| 多模态 / 图片输入 | 纯文本模型**不要勾**；要它看图就换多模态模型 |
 
-**务必保持关闭**（面板 → 群聊相关设置）：
-`群聊上下文`、`群聊消息历史`、`主动回复` —— 与插件功能重复，开了会重复回复且明显变慢。
+4. 保存后把它设为**默认对话模型**（面板里通常叫「使用」「设为默认」）。
+5. 面板自带「对话测试 / 聊天」发一句 `你好`，能出字说明 Key、Base、模型名都对。
+
+**换成别家**：任何 OpenAI 兼容端点都行 —— 把 Base 换成服务商给的地址（一般以 `/v1` 结尾），
+模型换成对应 ID；OpenAI 官方是 `https://api.openai.com/v1`，国内厂商按各自文档填兼容端点。
+不要填成 `.../chat/completions`，AstrBot 自己会拼路径。
+
+**关于看图**：桥会把图片以 base64 上报（不走文件路径，因为 AstrBot 在容器里）。
+纯文本模型收到图片会报错或被忽略；要稳定看图/表情包，默认 provider 必须是**多模态模型**
+（如 Gemini、Qwen-VL、GPT-4o 一类），且面板里勾选图片输入能力。
+
+**Key 报错对照**：
+
+| 现象 | 原因 |
+|---|---|
+| `401` / `invalid api key` | Key 复制不全、过期，或前后带了空格 |
+| `403` | Key 没有该模型权限，或账号欠费 |
+| `404` | Base URL 少了/多了 `/v1`，或写成了完整 `/chat/completions` |
+| `model not found` | 模型 ID 与账号可用模型不一致 |
+| 一直超时 | 本机需要代理；AstrBot 在容器里，容器默认不走宿主机代理，先试直连 |
+
+**安全**：Key 只保存在 `data\astrbot\cmd_config.json`（已 gitignore），
+**不要**写进 `.env`、README、群聊或截图；怀疑泄露立刻到服务商后台吊销重发。
+面板 `6185` 与 OneBot `6199` 不要映射到公网。
+
+#### 3.3 关掉与插件重复的功能（必做）
+
+面板 → 配置 / 通用设置 → 群聊相关，把这三项**保持关闭**：
+
+- `群聊上下文`（`group_icl_enable`）
+- `群聊消息历史`
+- `主动回复`（`active_reply`）
+
+原因：本项目的插件自己维护 L1/L3/L4 记忆与接话判定；框架这些功能再开一遍会
+**重复回复、上下文翻倍、延迟明显上升**。不用的 TTS/语音、自带群聊类插件也建议关掉。
+
+#### 3.4 人格（回复风格）
+
+面板 → **人格 / Persona** → 新建或修改系统提示词，然后在平台/会话里选中它。
+建议：短句、群友口吻、不用客服腔、不复述提问、不主动说「我是 AI」。
+本仓库不固化人格。改完在群里发 `/gareload`（或重启 AstrBot）生效。
+
 
 ### 4. 确认插件挂载（**这一步最容易踩**）
 
@@ -188,31 +339,131 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
 `[group_activation] 已加载 v0.15.1 …`
 
-### 5. 装并启动微信桥
+#### 4.1 插件参数（可选，按需改）
 
-先确认：**微信已登录、停在目标群、没有锁屏**。
+文件：`plugins\astrbot_plugin_group_activation\config.json`（仓库内，挂载进容器）。
+改完执行 `restart-astr.cmd` 或 `docker compose restart astrbot`，日志会打印新版本与关键参数。
+
+| 字段 | 默认 | 作用 |
+|---|---|---|
+| `w0_seconds` | 30 | 被 @ 后的初始窗口长度（秒） |
+| `idle_seconds` | 30 | 最后一次活动后多久休眠（滑动窗口） |
+| `window_max_seconds` | 120 | 窗口最长存活时间 |
+| `active_groups_max` | 3 | 同时活跃的群上限 |
+| `l1_size` | 10 | 每次注入多少条 L1 群聊背景 |
+| `local_routing` | true | 本地先筛掉无关消息，省 token |
+| `llm_decides_participation` | true | 放行后模型仍可输出 `[PASS]` 保持沉默 |
+| `merge_seconds` / `merge_max_seconds` | 5 / 30 | 碎片合并的静默等待 / 最长等待 |
+| `history_max_turns` / `history_max_chars` | 8 / 12000 | 原生多轮历史的上限 |
+| `image_carry_seconds` | 30 | 「先发图、再问图」的图片跟随窗口 |
+| `bot_names` | 你的机器人昵称 | 无内容消息「按名字判断」时用，**改成实际群昵称** |
+| `kb_enable` | true | L4 知识库；没装 Ollama 嵌入就设 `false`（不影响聊天） |
+| `search_enable` / `search_daily_limit` | true / 50 | 后台浏览器搜索与每日上限 |
+| `amap_enable` / `amap_daily_limit` | true / 100 | 高德工具与每日上限 |
+| `website_enable` / `website_daily_limit` | true / 300 | 网页正文读取与每日上限 |
+| `ignore_prefixes` | `["/"]` | 以这些前缀开头的消息不参与 |
+
+### 5. 装并启动微信桥（本机，不在容器里）
+
+先确认：**微信已登录、保持运行、停在目标群、没有锁屏**。
+
+#### 5.1 建虚拟环境、装依赖
 
 ```powershell
 cd c:\webot\bridge
 python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -U pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-
-.\.venv\Scripts\python.exe probe_db.py       # 自检 1：能否找到微信数据目录
-.\.venv\Scripts\python.exe introspect.py     # 自检 2：能否读到账号/群/消息
-
-copy config.example.json config.json         # 首次
-notepad config.json                          # 必须改下面两项
-.\.venv\Scripts\python.exe main.py           # 运行（或双击仓库根的 start.cmd）
 ```
 
-`config.json` 里**必须改对**这两项，否则收不到 @ 或发不出去：
+- 依赖里含 `wechatauto-replica`（读微信库 + UIA 发送）、`websockets`、`Pillow`、
+  `playwright` 等，第一次装需要几分钟。
+- 网页搜索/读取用**系统已装的 Microsoft Edge**（`browser_channel=msedge`），
+  一般**不需要**再跑 `playwright install`。如果日志明确报缺浏览器，再执行
+  `.\.venv\Scripts\python.exe -m playwright install chromium`。
+- 装依赖失败先确认 Python 是 **64 位**（见上方「前置条件」）。
 
-| 字段 | 要求 |
-|---|---|
-| `wechat.bot_nickname` | 机器人在群里的昵称，与微信界面**完全一致** |
-| `wechat.groups` | `{"群wxid@chatroom": "群名称"}`，群名称与微信界面**完全一致** |
+#### 5.2 自检：先确认能读到微信
 
-启动日志里应能看到这几行（缺哪行就按那行去查）：
+```powershell
+.\.venv\Scripts\python.exe probe_db.py       # 找微信数据目录
+.\.venv\Scripts\python.exe introspect.py     # 读账号 / 群列表 / 消息字段
+```
+
+`probe_db.py` 成功时会打印一行 `>>> 请在 config.json 中使用 db_dir = ...`，
+把那个路径填进 `wechat.db_dir` 即可（找不到目录时必填）。
+
+`introspect.py` 会打印 `self_info`（你的微信昵称、wxid）和 `groups` 列表。
+在输出里找形如 `"username": "xxxxxxxx@chatroom"` 和对应的群名称，
+这两个值就是 `wechat.groups` 的键和值。
+
+> 这两个脚本失败，说明微信没登录、版本不兼容，或「文档」目录被 OneDrive 重定向。
+> 先解决自检，不要急着启动 `main.py`。
+
+#### 5.3 写 `bridge\config.json`
+
+```powershell
+copy config.example.json config.json
+notepad config.json
+```
+
+第一次只需要改这两项（其余保持默认就能跑）：
+
+```json
+{
+  "astrbot": {
+    "ws_url": "ws://127.0.0.1:6199/ws"
+  },
+  "wechat": {
+    "bot_nickname": "你的机器人群昵称",
+    "groups": {
+      "12345678901@chatroom": "群名称（与微信界面完全一致）"
+    }
+  }
+}
+```
+
+完整字段说明：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `astrbot.ws_url` | `ws://127.0.0.1:6199/ws` | 与面板 aiocqhttp 的端口一致；**末尾的 `/ws` 不能少** |
+| `astrbot.token` | 空 | 面板里填了 Token 就必须一致 |
+| `astrbot.self_id` | `10001` | 桥对 AstrBot 自称的机器人 ID，仅内部用 |
+| `astrbot.heartbeat_seconds` | 15 | 心跳间隔 |
+| `wechat.bot_nickname` | `群助手` | 机器人群昵称，作 @ 识别的补充别名（主用数据库里的本人昵称），建议与微信界面一致 |
+| `wechat.bot_nicknames` | `[]` | 额外别名（改过昵称、有特殊符号时用） |
+| `wechat.groups` | `{}` | `{"群wxid@chatroom": "群显示名"}`，**群名必须完全一致**（发送靠它定位会话） |
+| `wechat.group_whitelist` | `[]` | 仅当 `groups` 为空时生效，按群名/ID 过滤自动扫到的群 |
+| `wechat.db_dir` | 空 | 微信数据目录；留空自动探测，OneDrive 重定向时必填 |
+| `wechat.poll_interval` | 1.5 | 轮询间隔（秒），越小越及时、越费 CPU |
+| `wechat.rhythm` | `fast` | 拟人节奏层：`natural`/`calm`/`fast`/`off`；**不要设 `off`**（风控） |
+| `wechat.verify_send` | false | 发送后回读数据库确认，更可靠但最多多等 8 秒 |
+| `wechat.send_images` | true | 把图片以 base64 上报给 AstrBot |
+| `wechat.image_max_bytes` | 3000000 | 单张图片字节上限，超了退化成 `[图片]` |
+| `wechat.image_max_edge` | 1280 | 长边像素上限，控制视觉 token；`0` 关闭缩放 |
+| `wechat.fetch_stickers` | true | 表情包当图片处理（只取第一帧） |
+| `wechat.image_cache_keep` | 200 | 本地图片缓存保留张数，供引用旧图时找回 |
+| `website.enabled` | true | 网页读取 / 后台搜索总开关 |
+| `website.search_engine` | `bing` | `bing` 或 `baidu`（网页版，不需要 API Key） |
+| `website.restrict_domains` | false | 是否启用域名白名单 |
+| `website.max_ping_ms` | 300（示例配置） | 访问前 ping 必须严格小于该值；不写该字段时内置兜底是 500 |
+| `logging.level` | INFO | 排障时可改 `DEBUG` |
+
+#### 5.4 启动
+
+两种方式任选，**不要同时开两份**：
+
+```powershell
+# 方式 A：前台运行，方便看日志（调试用）
+.\.venv\Scripts\python.exe main.py
+```
+
+**方式 B（推荐日常）**：双击仓库根目录的 `start.cmd`。它会拉起 Docker Desktop →
+起 AstrBot → 等 OneBot 就绪 → 后台起桥，桥的输出写到 `bridge\bridge.log` 与
+`bridge\bridge.err.log`，关掉窗口不会杀掉机器人。
+
+启动成功的日志（`bridge.err.log` 或前台窗口）应包含：
 
 ```
 微信账号: <昵称> (wxid_xxx)
@@ -221,16 +472,53 @@ notepad config.json                          # 必须改下面两项
 已连接 AstrBot -> ws://127.0.0.1:6199/ws
 ```
 
-### 6. 验证
+缺哪行就查哪项：
 
-微信停在目标群且不锁屏，群里发：
+| 缺的行 | 含义 |
+|---|---|
+| `微信账号` | 微信没登录 / 版本不匹配 / 数据目录找不到（回 §5.2） |
+| `图片解密密钥` | 密钥提取失败；图片会退化成 `[图片]`，文字仍可用 |
+| `监听 N 个群` | `groups` 配错或为空；群名/群 ID 与微信不一致 |
+| `已连接 AstrBot` | AstrBot 没起、端口不对、Token 不匹配（桥每 5 秒自动重连） |
 
+#### 5.5 桥的日常使用规则
+
+- **@ 才出现**：不 @ 不回复。被 @ 后开 30 秒窗口，窗口内只接「和它刚说的话有关」的追问。
+- **首次 @ 会等 5 秒**：合并同一批提问，最多等 30 秒，避免一句话回三遍。
+- **图片**：`@机器人 + 图片` 直接看图；单发图片先缓存，30 秒内补一句「这是什么」会带上图。
+  引用很早以前的图也能找回（本地缓存，默认 200 张）。
+- **引用消息**：引用别人的原话会一起带上，不需要它自己猜。
+- **只监听 `groups` 里的群**：新进群必须把群加进 `config.json` 再 `restart-bridge.cmd`
+  （群列表只在桥启动时读一次）。
+- **改配置后重启对应服务**：改 `bridge\config.json` / 桥代码 → `restart-bridge.cmd`；
+  改插件配置 / 插件代码 → `restart-astr.cmd`。
+- **微信窗口**：桥发送时会自己切会话、把微信窗口切到前台，属正常现象；
+  期间**不要锁屏**，否则 UIA 点击和键入会失败。
+
+### 6. 验证（按顺序做四条）
+
+微信停在目标群、不锁屏，然后：
+
+1. **纯文本**：群里发 `@你的机器人 你好` → 数秒内回复；
+   桥日志出现 `[收到]` → `[上报]` → `[发送@]` 三段。
+2. **看图**：`@你的机器人` 同时发一张图 → 它能描述图片内容
+   （纯文本模型会失败，见 §3.2 的看图说明）。
+3. **先图后问**：先单发一张图（不 @），30 秒内再发 `这张图里写了什么`
+   → 只回一条，且带图。
+4. **记忆**：先聊两句，再 `@你的机器人 刚才我们说到哪了` → 能接上上下文。
+
+失败时按顺序定位：
+
+```powershell
+# 桥有没有收到、有没有上报
+Get-Content c:\webot\bridge\bridge.err.log -Encoding Default -Tail 50
+# 框架有没有放行给模型
+docker compose logs --tail 80 astrbot
 ```
-@你的机器人 你好
-```
 
-数秒内应回复。机器人自己的日志（`bridge\bridge.err.log`）里能看到
-`[收到]` → `[上报]` → `[发送@]` 三段。
+桥日志没有 `[收到]` → 桥/微信/群名配置问题；有 `[收到]` 没 `[上报]` → 该条被判为无需处理；
+框架日志没有「放行默认 LLM」→ 窗口没开或没识别成 @；
+有「参与判定已生效」→ 模型自己选了 `[PASS]`（正常，它在判断不该接话）。
 
 > 第一次发送会慢一些：桥要先定位微信窗口/输入框并做一次窗口校准。
 
@@ -268,7 +556,17 @@ L4 用**本地嵌入**（Ollama `bge-m3`）做语义检索，需要额外约 2 G
 
 ```powershell
 scripts\pull_ollama_model.ps1     # 拉取 bge-m3（绕过代理 fake-IP 导致的 pull 失败）
+docker compose stop astrbot
+c:\webot\bridge\.venv\Scripts\python.exe c:\webot\scripts\add_embedding_provider.py "c:\webot\data\astrbot\cmd_config.json"
+docker compose start astrbot
 ```
+
+要点：
+
+- 嵌入 Provider 的 Base URL 必须是 **`http://host.docker.internal:11434`**，
+  写 `localhost` 会指向容器自己。
+- Provider ID 要与插件 `config.json` 的 `kb_embedding_provider_id` 一致，默认 `ollama/bge-m3`。
+- 写 `cmd_config.json` 前**必须先停容器**，否则 AstrBot 退出时会回写覆盖。
 
 不需要长期知识库的话，把插件 `config.json` 的 `kb_enable` 设为 `false` 即可关掉
 （只影响 `/garemember` 那类知识，**不影响日常聊天**）。
@@ -277,15 +575,64 @@ scripts\pull_ollama_model.ps1     # 拉取 bge-m3（绕过代理 fake-IP 导致�
 
 ## 日常使用
 
+### 启动、停止、重启（双击即可）
+
+| 双击这个文件 | 作用 | 什么时候用 |
+|---|---|---|
+| **`start.cmd`** | 拉起 Docker Desktop → 起 AstrBot → 后台起微信桥，最后打印状态 | 开机后、崩溃后；**不会重启已经在跑的** |
+| `stop.cmd` | 停桥 + 停容器（Docker Desktop 保持运行） | 维护、临时下线 |
+| `status.cmd` | 只读查看状态 | 怀疑没起来时 |
+| **`restart-bridge.cmd`** | 只重启桥（不碰 AstrBot） | 改 `bridge\config.json`、桥代码、**新进群** |
+| **`restart-astr.cmd`** | 只重启 AstrBot（桥会自动重连） | 改插件代码、插件 `config.json`、人格 |
+| **`screen-off.cmd`** | 切虚拟显示器熄屏，机器人继续跑 | 夜里挂机（见 §7） |
+
+底层脚本也可直接调用：
+
 ```powershell
-start.cmd / stop.cmd / status.cmd / restart-astr.cmd / restart-bridge.cmd
-screen-off.cmd                     # 熄屏挂机
-docker compose logs -f astrbot     # 框架日志
-Get-Content c:\webot\bridge\bridge.err.log -Encoding Default -Tail 50   # 桥日志
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\webot-service.ps1 start
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\webot-service.ps1 stop
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\webot-service.ps1 status
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\webot-service.ps1 bridge   # 只重启桥
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\webot-service.ps1 astr     # 只重启 AstrBot
 ```
 
 > ⚠️ **开机自启未配置**：重启电脑后机器人不会自己起来，要手动双击 `start.cmd`
 >（它会拉起 Docker Desktop → 起容器 → 起桥）。想自动化就建一个"登录时运行 start.cmd"的计划任务。
+
+### 看日志
+
+```powershell
+docker compose logs -f astrbot                                          # 框架 + 插件日志
+Get-Content c:\webot\bridge\bridge.err.log -Encoding Default -Tail 50   # 桥日志（推荐）
+Get-Content c:\webot\bridge\bridge.log -Encoding Default -Tail 50       # 桥标准输出
+```
+
+### 第一次部署完成后，建议按这张清单过一遍
+
+- [ ] `status.cmd` 里 AstrBot 容器是 `Up`，桥显示已连接
+- [ ] 群里发 `/gaw` 有回复（说明消息链路通）
+- [ ] 发 `/gactx` 能看到 L1 背景（说明记忆注入生效）
+- [ ] `@机器人 你好` 能回，且只回一条（回两条说明有重复实例或框架群聊功能没关）
+- [ ] 发一张图能描述（纯文本模型会失败，属预期）
+- [ ] 打开服务商后台的用量页，确认没有被高频调用
+
+### 改了什么要重启什么
+
+| 改动 | 需要的操作 |
+|---|---|
+| `bridge\config.json`、桥的 `.py`、新进群 | `restart-bridge.cmd` |
+| `plugins\astrbot_plugin_group_activation\config.json`、插件代码 | `restart-astr.cmd` |
+| `.env`（端口、高德 Key） | `docker compose up -d --force-recreate astrbot` |
+| 面板里的模型 / 人格 / 平台 | 面板内保存即可；人格也可用 `/gareload` |
+| 升级代码 | `git pull` → `restart-astr.cmd` → 依赖变了再 `pip install -r bridge\requirements.txt` → `restart-bridge.cmd` |
+
+### 消耗与额度
+
+- 只有**被放行**的消息才会调用模型；L1 背景、本地判定都在本机完成，不花 token。
+- 每批提问默认只放行**一个**默认模型请求；网站读取成功通常额外增加**两次内容审核**调用。
+- 三个日额度按**本实例所有群合计**计数，改了插件 `config.json` 才生效：
+  `website_daily_limit`（默认 300）、`search_daily_limit`（50）、`amap_daily_limit`（100）。
+- 失败、取消、无结果也计数 —— 这是本地资源上限，不等于服务商的剩余额度。
 
 **群内命令**（在群里直接发）：
 
@@ -342,6 +689,24 @@ webot/
 ---
 
 ## 常见问题
+
+**面板登录密码是多少 / 忘了怎么办**
+首次启动日志会打印（§2）：
+
+```powershell
+docker logs webot-astrbot 2>&1 | Select-String -Pattern "密码|password|username|账号"
+```
+
+忘了就按 §2 的重置办法处理（先备份 `cmd_config.json`）。
+
+**填了 API Key 还是 401 / 404 / model not found**
+对照 §3.2 的报错表逐项查：Base 是否以 `/v1` 结尾、Key 前后有没有空格、
+模型名是否已开通、有没有设为**默认** provider。面板的「对话测试」会给出具体 HTTP 错误。
+
+**桥一直连不上 AstrBot（`did not receive a valid HTTP response`）**
+按顺序查：`docker compose ps` 里容器是否 `Up` → 端口 `6199` 是否映射 →
+面板 aiocqhttp 的 host 是否 `0.0.0.0`、端口是否 `6199` → Token 是否与
+`bridge\config.json` 的 `astrbot.token` 一致。桥每 5 秒自动重连，改完面板保存后等一会儿即可。
 
 **Docker 引擎报 `500` / `docker info` 为空**
 缺 WSL2 或虚拟机平台功能 → 回到 §0.1 两条命令 + **重启整机**；仍不行 `wsl --update`。
