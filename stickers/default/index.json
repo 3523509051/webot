@@ -1,0 +1,627 @@
+{
+  "version": 1,
+  "next": 25,
+  "items": {
+    "st_0001": {
+      "file": "files/st_0001_高冷嫌弃_无语冰精.jpg",
+      "name": "无语冰精",
+      "emotion": "高冷嫌弃",
+      "scenes": [
+        "聊天互怼",
+        "无奈回应",
+        "朋友犯傻时"
+      ],
+      "tags": [
+        "东方Project",
+        "琪露诺",
+        "fumo",
+        "半眯眼",
+        "表情包"
+      ],
+      "description": "一只头戴深蓝色大蝴蝶结的琪露诺毛绒玩偶，半眯着眼睛、嘴角平直，露出一副厌世又无语的神情。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "81b2db1895ee5f4f4a3d709ec549fca5bdaaa5a9975c3feb71b0247729b1e66a",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0002": {
+      "file": "files/st_0002_温馨_双龙贴贴.jpg",
+      "name": "双龙贴贴",
+      "emotion": "温馨",
+      "scenes": [
+        "聊天互动",
+        "工作摸鱼"
+      ],
+      "tags": [
+        "Q版",
+        "二次元",
+        "女仆",
+        "可爱"
+      ],
+      "description": "白发恶魔趴在笔记本前打字，身旁站着一位冷脸但头顶冒爱心的小女仆。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "81aeb89e05b3f611f7cb78c8cd00d294016e37ef27a9a53d12130ef40b60be20",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0003": {
+      "file": "files/st_0003_气鼓鼓_傲娇凶萌.jpg",
+      "name": "傲娇凶萌",
+      "emotion": "气鼓鼓",
+      "scenes": [
+        "聊天怼人",
+        "假装生气",
+        "撒娇抗议"
+      ],
+      "tags": [
+        "二次元",
+        "橘发少女",
+        "傲娇",
+        "表情包"
+      ],
+      "description": "橘发少女双手握拳、皱眉瞪眼的生气模样，底部配有毫无逻辑的搞笑谐音文字。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "567d651eefc32519f566b29a5d14e3c4f974e6f5be3c2d2e59cfb6cc4f15a860",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 2,
+      "last_used_at": "2026-10-23 18:54:01"
+    },
+    "st_0004": {
+      "file": "files/st_0004_不爽_蓝发小女仆.jpg",
+      "name": "蓝发小女仆",
+      "emotion": "不爽",
+      "scenes": [
+        "表达无语",
+        "被惹生气",
+        "傲娇抗议"
+      ],
+      "tags": [
+        "Q版",
+        "女仆装",
+        "玩偶",
+        "傲娇",
+        "生气"
+      ],
+      "description": "蓝色双马尾小女仆玩偶站在金属碗中，微微皱眉眼神不爽地盯着镜头。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "b319d8ef4b4e9ef13b7d278c3f964239d8f6a97ce6f6f9e14febd57d8606bd19",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0005": {
+      "file": "files/st_0005_呆滞超然_切换神格模式.jpg",
+      "name": "切换神格模式",
+      "emotion": "呆滞超然",
+      "scenes": [
+        "不想理人/已读不回",
+        "开启专注或发呆状态"
+      ],
+      "tags": [
+        "紫色小怪",
+        "发光眼",
+        "中二",
+        "沙雕表情包"
+      ],
+      "description": "一个紫色的圆润卡通生物双眼发着白光，底部配有文字“切换为神格模式”。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "ed466679e3525bbcf2c1959d11ed4a61f74a0f3b06161fa5ee40e6d438311e39",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 1,
+      "last_used_at": "2026-10-23 18:31:58"
+    },
+    "st_0006": {
+      "file": "files/st_0006_无语嫌弃_女仆嫌弃.jpg",
+      "name": "女仆嫌弃",
+      "emotion": "无语嫌弃",
+      "scenes": [
+        "聊天怼人",
+        "表达无奈"
+      ],
+      "tags": [
+        "二次元",
+        "女仆",
+        "嫌弃脸",
+        "表情包"
+      ],
+      "description": "蓝发女仆装角色半眯着眼、张嘴做出嫌弃表情，双手向外摊开，上方配有夸张的大字。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "b9416b06aaa93aeb3a18bba2a466d6d65c7b24fb439ce2100d483ccf7b88ee57",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 6,
+      "last_used_at": "2026-10-23 19:24:04"
+    },
+    "st_0007": {
+      "file": "files/st_0007_呆萌委屈_吃白饭.jpg",
+      "name": "吃白饭",
+      "emotion": "呆萌委屈",
+      "scenes": [
+        "群聊求投喂",
+        "撒娇蹭饭"
+      ],
+      "tags": [
+        "二次元",
+        "吃白饭"
+      ],
+      "description": "蓝发女仆小妹双手举着写有“吃白饭”的牌子，表情显得呆萌无辜。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "6dce55e5e0ab8b6d8fd846ddcf0410ff0b5fb832327e465ef2f2c183145bccff",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0008": {
+      "file": "files/st_0008_呆萌_憨憨举拍.jpg",
+      "name": "憨憨举拍",
+      "emotion": "呆萌",
+      "scenes": [
+        "不知所措",
+        "准备行动"
+      ],
+      "tags": [
+        "黄色",
+        "圆润",
+        "表情包",
+        "呆萌"
+      ],
+      "description": "一个圆润的黄色卡通生物举着长杆物品，仰头看天，表情呆萌。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "6d5be46bca604eb5c436f5b9c02b74cca1e1ecf5973567e02100670eb93b9200",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0009": {
+      "file": "files/st_0009_馋呆滞_呆萌流口水.jpg",
+      "name": "呆萌流口水",
+      "emotion": "馋呆滞",
+      "scenes": [
+        "看到美食时",
+        "想要某物时",
+        "装傻充愣时"
+      ],
+      "tags": [
+        "猫咪",
+        "流口水",
+        "呆萌",
+        "搞笑"
+      ],
+      "description": "五只猫咪排排坐，睁着大圆眼，嘴里挂着长长的口水，一脸呆滞又渴望。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "7a5b3b388789a7265e546c3f531620a9a7fcca2f84fe1ad68df761283601d3ce",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0010": {
+      "file": "files/st_0010_调侃_老实赚钱很枯燥.jpg",
+      "name": "老实赚钱很枯燥",
+      "emotion": "调侃",
+      "scenes": [
+        "朋友聊天打趣",
+        "吐槽工作赚钱"
+      ],
+      "tags": [
+        "二次元",
+        "动漫",
+        "搞钱",
+        "表情包"
+      ],
+      "description": "粉发动漫女孩坏笑着发问：老实赚钱很枯燥吧？",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "a447976c514ab1d856aea1884b94873ddaa95d3a2ab85f7744416e9876ed2274",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0011": {
+      "file": "files/st_0011_愉悦_开心小女仆.jpg",
+      "name": "开心小女仆",
+      "emotion": "愉悦",
+      "scenes": [
+        "日常聊天打招呼",
+        "分享好消息",
+        "表达轻松快乐"
+      ],
+      "tags": [
+        "Q版",
+        "女仆装",
+        "蓝发",
+        "可爱",
+        "治愈"
+      ],
+      "description": "一个蓝发Q版小女仆闭眼开心地蹦跶，旁边放着一根胡萝卜，画面温馨可爱。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "3d12ec9e1dbb95d299f02d740deb308f8dd14b32f0ccac62777b3bff4930a5e1",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 10,
+      "last_used_at": "2026-10-23 19:36:16"
+    },
+    "st_0012": {
+      "file": "files/st_0012_奶凶_生气小女仆.jpg",
+      "name": "生气小女仆",
+      "emotion": "奶凶",
+      "scenes": [
+        "假装生气",
+        "准备干饭"
+      ],
+      "tags": [
+        "二次元",
+        "萌系",
+        "女仆",
+        "傲娇"
+      ],
+      "description": "一个蓝发小女仆双手握拳，气鼓鼓地盯着面前的大铁盆。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "c0fcaef07f26206afa18628355955983139ddb750b1d4f49e3505983200d48b7",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0013": {
+      "file": "files/st_0013_疑惑懵逼_区凶不分.jpg",
+      "name": "区凶不分",
+      "emotion": "疑惑懵逼",
+      "scenes": [
+        "吐槽错别字",
+        "遇到不懂的问题",
+        "装傻求教"
+      ],
+      "tags": [
+        "二次元",
+        "反差萌",
+        "错别字",
+        "呆萌"
+      ],
+      "description": "蓝发兽耳小女孩举着写有“区”字的纸，却疑惑地询问“凶”字是什么意思。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "560257781edde64dc518427db102053b5715f86ed9bdf6f9d5d75c191b478dbc",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0014": {
+      "file": "files/st_0014_自嘲_Codex上头了.jpg",
+      "name": "Codex上头了",
+      "emotion": "自嘲",
+      "scenes": [
+        "程序员交流",
+        "吐槽AI编程"
+      ],
+      "tags": [
+        "Codex",
+        "AI编程",
+        "上瘾",
+        "程序员"
+      ],
+      "description": "一个橙色方块小人眯眼抽着卷烟，旁边是codex图标，配文暗示尝试AI编程工具就像戒烟一样会上瘾。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "430cc0d0820fe64d1ea8000b04e15072f1c5279acda7c2cf96418a5544619bc7",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0015": {
+      "file": "files/st_0015_惊恐_震惊小紫瞳.jpg",
+      "name": "震惊小紫瞳",
+      "emotion": "惊恐",
+      "scenes": [
+        "收到离谱消息",
+        "看到震惊事物",
+        "无语害怕时"
+      ],
+      "tags": [
+        "二次元",
+        "Q版",
+        "震惊",
+        "大眼",
+        "捂嘴"
+      ],
+      "description": "一个金发紫瞳的Q版角色双手捂嘴、瞪大双眼，露出惊恐不知所措的表情。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "9640b2268c3720eaed89ef2a2f1448e33101c6858b45e7b53eefb7b5fc43883d",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0016": {
+      "file": "files/st_0016_呆萌委屈_趴地暗中观察.jpg",
+      "name": "趴地暗中观察",
+      "emotion": "呆萌委屈",
+      "scenes": [
+        "群聊斗图",
+        "表达委屈"
+      ],
+      "tags": [
+        "Q版",
+        "兽耳",
+        "白毛",
+        "可爱"
+      ],
+      "description": "一只白发兽耳的小角色趴在草丛泥坑里，睁着大大的红眼睛委屈巴巴地暗中观察。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "149a6fb38148239fb27db1ff84536038d592d7a66b16f2a610fb3287f1184309",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0017": {
+      "file": "files/st_0017_嘲讽鄙视_眼镜琪露诺鄙视.jpg",
+      "name": "眼镜琪露诺鄙视",
+      "emotion": "嘲讽鄙视",
+      "scenes": [
+        "群聊怼人",
+        "表达无语",
+        "朋友互损"
+      ],
+      "tags": [
+        "东方Project",
+        "琪露诺",
+        "竖中指",
+        "眼镜",
+        "沙雕"
+      ],
+      "description": "戴着眼镜的琪露诺毛绒玩偶，眼神轻蔑地竖起黄色Emoji中指。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "76ebe2214a90313f4f99f6be36d0ee4561dad803f747b2617837f3ecb825df37",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0018": {
+      "file": "files/st_0018_撒娇索要_token上交.jpg",
+      "name": "token上交",
+      "emotion": "撒娇索要",
+      "scenes": [
+        "群聊讨要token",
+        "好友调侃互动"
+      ],
+      "tags": [
+        "二次元",
+        "蓝发女仆",
+        "伸手",
+        "token",
+        "撒娇"
+      ],
+      "description": "蓝发兽耳女仆伸手索要，配文让把token给妈妈保管。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "94061f10faddc4354aa9d546702098f73c8f1e597edfea95da5eab56ff182b5d",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0019": {
+      "file": "files/st_0019_元气_蓝鲸女仆.jpg",
+      "name": "蓝鲸女仆",
+      "emotion": "元气",
+      "scenes": [
+        "打气加油",
+        "表达支持"
+      ],
+      "tags": [
+        "蓝发",
+        "女仆装",
+        "鲸鱼尾巴",
+        "Q版"
+      ],
+      "description": "Q版蓝发蓝瞳女仆举起拳头，正在加油打气。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "3a5c6cf56315be4cfb268013d5328048691e10b654d14201e981f3c275e223f1",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0020": {
+      "file": "files/st_0020_无语冷漠_无语美洲狮.jpg",
+      "name": "无语美洲狮",
+      "emotion": "无语冷漠",
+      "scenes": [
+        "表达无语",
+        "嫌弃对方",
+        "等待回复",
+        "看智障"
+      ],
+      "tags": [
+        "美洲狮",
+        "大猫",
+        "凝视",
+        "无语",
+        "表情包"
+      ],
+      "description": "一只美洲狮脸贴镜头，面无表情地直视前方，透着浓浓的无奈与无语。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "7866d8cff4b7252b22952e942182c1ee27d4d4971d91dece1eff867c5b8cac52",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 18,
+      "last_used_at": "2026-10-23 20:15:07"
+    },
+    "st_0021": {
+      "file": "files/st_0021_搞笑_橙色怪咖撅臀.jpg",
+      "name": "橙色怪咖撅臀",
+      "emotion": "搞笑",
+      "scenes": [
+        "朋友斗图",
+        "群聊调侃"
+      ],
+      "tags": [
+        "魔性",
+        "沙雕"
+      ],
+      "description": "一个橙色卡通生物撅着屁股回头大笑，臀部印有白色星芒图案。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "8bef07efdaff6dbf350a0c8e9fb5bbeaf182b0108510a7e94ab7cb9f46bcd3da",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0022": {
+      "file": "files/st_0022_傲娇嫌弃_用不起就别用.jpg",
+      "name": "用不起就别用",
+      "emotion": "傲娇嫌弃",
+      "scenes": [
+        "群聊怼人",
+        "拒绝伸手党"
+      ],
+      "tags": [
+        "二次元",
+        "萝莉",
+        "傲娇",
+        "表情包"
+      ],
+      "description": "白发橙瞳的动漫少女一脸嫌弃地指着下方，配文“用不起就别用”。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "19a1f4edd74806d211630fcfc0f67678eac4da29a90426524532b4817ca87b58",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0023": {
+      "file": "files/st_0023_心虚自嘲_瞎编应付.jpg",
+      "name": "瞎编应付",
+      "emotion": "心虚自嘲",
+      "scenes": [
+        "工作敷衍",
+        "应对客户",
+        "群聊斗图"
+      ],
+      "tags": [
+        "二次元",
+        "打工人",
+        "糊弄学",
+        "职场",
+        "女仆"
+      ],
+      "description": "蓝发女仆闭眼自信地支着手指，背后却浮现流冷汗的惊恐虚影，配文直言要瞎编应付用户。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "2ee27e57c76d70826c56cdce31ee70714be5eb41b849b5d29c5993938b69ba5e",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    },
+    "st_0024": {
+      "file": "files/st_0024_嘲讽_笨蛋对视.jpg",
+      "name": "笨蛋对视",
+      "emotion": "嘲讽",
+      "scenes": [
+        "聊天互怼",
+        "调侃朋友"
+      ],
+      "tags": [
+        "笨蛋",
+        "对视",
+        "嘲讽",
+        "玩偶",
+        "表情包"
+      ],
+      "description": "一个蓝发猫耳玩偶半睁着眼斜视，下方配有“有两个笨蛋在对视”的文字。",
+      "source": {
+        "group": "emoji-cache",
+        "sender": "",
+        "image_id": null
+      },
+      "sha256": "65d83b2e08b18ca94e3ec166139db2affe0d2bc090d5238f5ed5090386c3199c",
+      "created_at": "2026-10-23 14:08:05",
+      "added_by": "ai",
+      "uses": 0
+    }
+  }
+}
