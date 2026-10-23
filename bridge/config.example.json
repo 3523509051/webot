@@ -11,7 +11,9 @@
     "group_whitelist": [],
     "groups": {},
     "self_wxid": "",
-    "image_max_edge": 1280,
+    "image_max_edge": 0,
+    "image_max_bytes": 10000000,
+    "image_cache_keep": -1,
     "db_dir": "",
     "max_mentions": 3,
     "image_carry_seconds": 30.0

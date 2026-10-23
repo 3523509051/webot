@@ -57,12 +57,16 @@
 
 ### 新功能与升级
 
-当前版本 **v0.16.0**：支持一条回复 @ 多个群成员、@ 未发言成员、完整群成员名单；先图后问的桥侧兜底；后台必应浏览器搜索、高德天气与旅游路线、网页正文读取。
+当前版本 **v0.17.0**：图片按群独立编号、全量缓存；L1 只记 `[图片 #ID]`，AI 需要时调用 `list_images` / `look_image` 查看；默认不降分辨率；支持一条回复 @ 多个群成员、@ 未发言成员、完整群成员名单；先图后问的桥侧兜底；后台必应浏览器搜索、高德天气与旅游路线、网页正文读取。
 
-已有服务器请按 [新功能升级指南](docs/upgrade-v0.16.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
+已有服务器请按 [新功能升级指南](docs/upgrade-v0.17.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
 ### 消耗控制
 
+- v0.17.0 图片编号与按需查看：桥按**每群独立编号**缓存图片，默认**保留所有**（不自动删除）；L1 记 `[图片 #12]`。模型需要旧图时调用 `list_images` 找编号、`look_image` 取图；当前批次已经附带的图不会重复取。L1 只保留最近 10 条，更早的图靠 `list_images` 按发送者/时间检索。
+- v0.17.0 防循环：同一编号重复取会返回“已提供”；过期/不存在直接终止；`list_images` 每轮最多 2 次、最多 50 条；`look_image` 每轮最多 10 张（可配置）。工具返回的图只用于本轮回答，提示词禁止转发。
+- v0.17.0 分辨率：桥 `image_max_edge=0`、`image_max_bytes=10000000`；AstrBot `provider_settings.image_compress_options.max_size=16384`。`Dockerfile.astrbot` 在**镜像构建时**直接把 `MODEL_IMAGE_MAX_BYTES` 从 512KB 改成 8MB；用 `docker compose up -d --build astrbot` 重建镜像后生效。
+- v0.16.1 多图与记忆：L1 只记录编号/占位，不存图片本体；L2 历史图默认剥离（`strip_history_images=true`），旧图不会每轮重发；只有当前批次图片会送给模型，提示词要求“没被问到的图不主动提、不逐张介绍”。
 - v0.16.0 多 @：模型在正文里写 `@昵称`，桥按顺序逐个用 UIA 点选插入真实 @（默认最多 3 个）。插件每次请求向桥拉取**完整群成员名单**，没发过言的成员也能被 @。相关配置：`mention_only_sender`、`mention_max_count`、`force_at_sender`，以及桥的 `wechat.max_mentions`。
 - v0.16.0 先图后问兜底：AstrBot 对纯图片事件不一定触发插件缓存时，桥按「群 + 发送者」缓存 30 秒；同一人随后问图时，把图并入同一条事件再上报。
 - v0.16.0 路径修正：脚本按仓库自身位置解析，不再硬编码 `C:\webot`；`webot-service.ps1` 从卸载注册表自动识别微信安装目录。
@@ -78,11 +82,15 @@
 
 - 近期交谈者的明确指令（如「来吧，数数」「请翻译」）和问题可开启新批次，即使上一批已经结束。明确请求不再附加允许 `[PASS]` 的参与提示；模型误选沉默时会给出回答或澄清，不额外重试。数数任务按群和发送者独立保存数字消息，跨批次保留，默认最后一次数字后120秒过期、最多200条/12000字符；超限会明确标记记录不完整。单独数字只保存，不独立调用模型。
 
-- 提问批次默认静默 `merge_seconds=5` 秒后派发，从首条起最多 `merge_max_seconds=30` 秒。等待期间每秒检查本地缓冲，不调用模型。其他人明确 @ 可加入同批次，已参与提问的人可以补充；旁观者闲聊、单发图片不续等待。批次结束后新问题进入下一批。每批只放行一个默认模型请求（模型工具调用、失败重试及 L3 提炼仍可能产生额外请求）。图片按发送者绑定；统一回复用昵称分段，微信真实 @ 仍仅提醒首位发送者。
+- 提问批次默认静默 `merge_seconds=5` 秒后派发，从首条起最多 `merge_max_seconds=30` 秒。等待期间每秒检查本地缓冲，不调用模型。其他人明确 @ 可加入同批次，已参与提问的人可以补充；旁观者闲聊、单发图片不续等待。批次结束后新问题进入下一批。每批只放行一个默认模型请求（模型工具调用、失败重试及 L3 提炼仍可能产生额外请求）。图片按发送者绑定；统一回复用昵称分段，需要提醒多人时模型可写多个 `@昵称`（默认最多 3 个）。
 
-- 平时所有群消息进入 L1（短文字或 `[图片]` 占位），不向模型逐条上报。被 @ 必回；窗口内只有近期和它交谈的人明显追问，才进一步交给模型判断。无关闲聊不会把窗口续活。
-- 单发图片或表情包先缓存引用，不立刻花视觉 token；同一人在 30 秒内发「这张图写了什么」等文字，或单独 @ 它时才补挂。直接 `@机器人` 发图依旧会看图。若打算分析图中的细小文字，可把 `image_max_edge` 调大。
-- 桥默认把长边超过 1280 像素的图缩到 1280；文件大小上限 `image_max_bytes` 仍独立生效。长边可在 `bridge/config.json` 的 `wechat.image_max_edge` 调整，设为 0 关闭缩放。
+- 平时所有群消息进入 L1（短文字，或 `[图片 #12]` / `[图片]` 这种编号/占位），不向模型逐条上报。被 @ 必回；窗口内只有近期和它交谈的人明显追问，才进一步交给模型判断。无关闲聊不会把窗口续活。
+- 单发图片或表情包会先缓存并分配本群编号；同一人在 30 秒内发「这张图写了什么」等文字，或单独 @ 它时才补挂。直接 `@机器人` 发图依旧会看图。
+- **旧图按需查看**：L1 只保留最近 10 条；更早的图不在 L1 里，模型需要时调用 `list_images` 按发送者/时间找编号，再调用 `look_image` 取图。工具返回的图只用于本轮回答，不转发、不写进 L2；每轮有取图/列目录上限，防止模型反复查。
+- 桥默认**不缩分辨率**：`wechat.image_max_edge=0`，单张字节上限 `image_max_bytes=10000000`；超字节上限才退化成 `[图片]`。想省视觉 token 可把 `image_max_edge` 设回 1280。
+- AstrBot 默认还有 **512KB** 模型输入上限；本仓库的 `Dockerfile.astrbot` 在构建镜像时直接改成 8MB。更新基础镜像后执行 `docker compose build --pull astrbot`，再 `docker compose up -d --force-recreate astrbot`。
+- 图片缓存默认**保留所有**（`image_cache_keep=-1`，不自动删除）。磁盘会持续增长，请自己定期查看 `bridge\cache\image` 大小；需要清理时手动处理，桥不会自动删。
+- L1 不存图片本体；L2 历史图默认剥离（`strip_history_images=true`），旧图不会每轮重发。只有**当前批次**的图片会随请求送给模型；提示词要求只描述被问到的图，未被问到的图不主动提、不逐张介绍。
 - 每次请求的原生历史限最近 8 轮、约 12000 个字符，并把其中旧图片换成占位；本轮的 L1/L3/L4 随当前请求提供。`plugins/astrbot_plugin_group_activation/config.json` 可调 `local_routing`、`history_max_turns`、`history_max_chars`、`image_carry_seconds`。字符数只用于粗略限额，实际 token 由模型计费端确定。
 - 当前版本的路由使用本地关键词和近期对话关系，因此一些含蓄的插话可能被漏掉；可以直接 @ 它，或把问题问完整。用 `/gareset` 可以新开原生会话，清除既有的长历史。
 
@@ -210,17 +218,18 @@ AMAP_WEB_KEY=
 > `scripts\webot-service.ps1` 会按自身位置推算仓库根，微信安装路径从卸载注册表自动识别；
 > 不再需要在脚本里手改 `c:\webot`。
 
-### 2. 起 AstrBot（第一次要拉镜像）
+### 2. 起 AstrBot（第一次要拉基础镜像并构建本地镜像）
 
 ```powershell
 cd c:\webot
-docker compose up -d astrbot
+docker compose up -d --build astrbot
 docker compose ps
 docker logs --tail 80 webot-astrbot
 ```
 
-首次会下载 `soulter/astrbot:latest`，视网络几分钟到十几分钟。`docker compose ps` 里
-`STATUS` 出现 `Up` 才继续。
+首次会下载 `soulter/astrbot:latest`，再按 `Dockerfile.astrbot` 构建本地镜像
+`webot-astrbot:local`（构建时把图片上限改成 8MB），视网络几分钟到十几分钟。
+`docker compose ps` 里 `STATUS` 出现 `Up` 才继续。
 
 **拿面板账号密码**（首次启动才有）：
 
@@ -341,7 +350,7 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 ```
 
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
-`[group_activation] 已加载 v0.16.0 …`
+`[group_activation] 已加载 v0.17.0 …`
 
 #### 4.1 插件参数（可选，按需改）
 
@@ -360,6 +369,11 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 | `merge_seconds` / `merge_max_seconds` | 5 / 30 | 碎片合并的静默等待 / 最长等待 |
 | `history_max_turns` / `history_max_chars` | 8 / 12000 | 原生多轮历史的上限 |
 | `image_carry_seconds` | 30 | 「先发图、再问图」的图片跟随窗口 |
+| `image_look_max_per_turn` | 10 | 每轮最多调用几次 `look_image`（防工具循环） |
+| `image_list_max_per_turn` | 2 | 每轮最多调用几次 `list_images` |
+| `image_list_limit` | 20 | `list_images` 默认返回条数（硬上限 50） |
+| `strip_history_images` | true | 把 L2 历史消息里的图换成占位，避免每轮重发 |
+| `stripped_image_placeholder` | `[图片]` | 剥离历史图后的占位文字 |
 | `mention_only_sender` | false | true = 只允许 @ 发送者、删除多余 @；false 才支持多 @ 和 @ 其他成员 |
 | `mention_max_count` | 3 | 一条回复最多保留几个 @（`mention_only_sender=false` 时生效），需与桥的 `wechat.max_mentions` 一致 |
 | `force_at_sender` | false | 被 @ 时是否强制回复开头 @ 发送者；false 由模型决定 |
@@ -448,10 +462,10 @@ notepad config.json
 | `wechat.rhythm` | `fast` | 拟人节奏层：`natural`/`calm`/`fast`/`off`；**不要设 `off`**（风控） |
 | `wechat.verify_send` | false | 发送后回读数据库确认，更可靠但最多多等 8 秒 |
 | `wechat.send_images` | true | 把图片以 base64 上报给 AstrBot |
-| `wechat.image_max_bytes` | 3000000 | 单张图片字节上限，超了退化成 `[图片]` |
-| `wechat.image_max_edge` | 1280 | 长边像素上限，控制视觉 token；`0` 关闭缩放 |
+| `wechat.image_max_bytes` | 10000000 | 单张图片字节上限，超了退化成 `[图片]` |
+| `wechat.image_max_edge` | 0 | 长边像素上限；`0` = 不缩分辨率，`1280` = 省视觉 token |
 | `wechat.fetch_stickers` | true | 表情包当图片处理（只取第一帧） |
-| `wechat.image_cache_keep` | 200 | 本地图片缓存保留张数，供引用旧图时找回 |
+| `wechat.image_cache_keep` | -1 | 图片缓存保留策略；-1 = 保留所有（默认），0 = 关闭索引；不自动删除 |
 | `wechat.image_carry_seconds` | 30 | 桥侧「先图后问」兜底窗口；0 = 关闭 |
 | `wechat.max_mentions` | 3 | 一条回复最多转换几个真实 @；需与插件 `mention_max_count` 一致 |
 | `website.enabled` | true | 网页读取 / 后台搜索总开关 |
@@ -495,8 +509,8 @@ notepad config.json
 
 - **@ 才出现**：不 @ 不回复。被 @ 后开 30 秒窗口，窗口内只接「和它刚说的话有关」的追问。
 - **首次 @ 会等 5 秒**：合并同一批提问，最多等 30 秒，避免一句话回三遍。
-- **图片**：`@机器人 + 图片` 直接看图；单发图片先缓存，30 秒内补一句「这是什么」会带上图。
-  引用很早以前的图也能找回（本地缓存，默认 200 张）。
+- **图片**：`@机器人 + 图片` 直接看图；单发图片先缓存并分配本群编号，30 秒内补一句「这是什么」会带上图。
+  引用旧图或让模型按 `[图片 #ID]` / `list_images` 查找时，也能找回（默认保留所有）。
 - **引用消息**：引用别人的原话会一起带上，不需要它自己猜。
 - **只监听 `groups` 里的群**：新进群必须把群加进 `config.json` 再 `restart-bridge.cmd`
   （群列表只在桥启动时读一次）。
@@ -531,7 +545,34 @@ notepad config.json
 [发送@] 测试群 -> NULL、NONE（UIA 6.55s, 路径=direct, @=成, 共2个）
 ```
 
-### 6. 验证（按顺序做五条）
+#### 5.7 图片、L1/L2 与多图
+
+- **L1 存编号/占位**：群聊背景里图片/表情包记为 `[图片 #12]`（缓存编号）或 `[图片]`（未入缓存），不含图片数据，不会把历史图重新送进模型。
+- **L2 默认剥图**：`strip_history_images=true` 会把会话历史里的 `image_url` 换成 `[图片]`；否则每轮都会重发旧图，token 会随历史线性增长。
+- **当前批次的多张图会一起送**：同一批消息里各发送者带的图会按序号放进本次请求，模型能看到全部；提示词要求只描述**被明确问到**的图，没被问到的图不主动提、不逐张介绍。
+- **窗口外的单图**：单发图先缓存；同一人 30 秒内追问「这是什么」才补挂（插件 `image_carry_seconds` + 桥 `wechat.image_carry_seconds`）。更早的图走 §5.8 的编号检索。
+- **分辨率**：桥 `wechat.image_max_edge=0` 不缩放，单张上限 `image_max_bytes=10000000`；AstrBot `provider_settings.image_compress_options.max_size=16384`。`Dockerfile.astrbot` 在镜像构建时把 `MODEL_IMAGE_MAX_BYTES` 改为 8MB；首次/更新基础镜像后执行 `docker compose up -d --build astrbot`。
+- 想省视觉 token：把桥 `image_max_edge` 设回 `1280`；想看细节：保持 `0`，但注意每张图都会计入模型视觉 token。
+
+#### 5.8 图片编号与按需查看（v0.17.0）
+
+桥会把收到的图片按**每群独立编号**存进 `bridge/cache/image/`，并写 SQLite 索引；默认**保留所有**，不自动裁剪。
+
+- 图片事件会带一段文字标记 `[图片 #12]`，L1 记录这个编号；
+- 模型需要看旧图时：
+  1. `list_images(sender?, since?, limit?)` → 返回 `#编号 / 时间 / 发送者 / 上下文`；
+  2. `look_image(image_id=12)` → 桥取图，AstrBot 把图追加到**同一轮**上下文，模型继续回答；
+- 人格、L1/L3/L4、会话历史都不变；工具只是取图；
+- 工具返回的图仅用于当轮回答，提示词禁止转发；
+- 模型看到 L1 的 `[图片 #ID]`、确实需要看时，应**直接调用 `look_image`**，不要先发“我看不到图 / 我去调出来看看”的预告；工具返回后再回答；
+- 引用图片如果本机没有原图（例如那张图在索引启动前就发过），桥会明确标“本机没有找到原图，不要猜测内容”，不会拿最近的其他图冒充；
+- **合并转发的聊天记录**：桥能读标题、文字摘要、文字条目、发送者和图片数量；记录**内部的图片**是微信 CDN 加密引用（`cdnthumburl`/`cdnthumbkey`），桥当前不下载，模型会明确说明“记录内图片无法直接读取”，不会猜；单张转发图片仍按普通图片解密。
+- L1 只保留最近 10 条，更早的图靠 `list_images` 按发送者/时间检索；
+- 防循环：同一编号重复取返回“已提供”；过期/不存在直接终止；`list_images` 每轮最多 2 次、最多 50 条；`look_image` 每轮最多 10 张（`image_look_max_per_turn` 可调）。
+
+> 磁盘：`image_cache_keep=-1` 表示不删除；图片越多占用越大，桥只记录不清理。需要腾空间时手动处理 `bridge\cache\image` 与 `bridge\cache\image_index.sqlite3`（不要只删文件而保留索引）。
+
+### 6. 验证（按顺序做六条）
 
 微信停在目标群、不锁屏，然后：
 
@@ -544,6 +585,9 @@ notepad config.json
 4. **记忆**：先聊两句，再 `@你的机器人 刚才我们说到哪了` → 能接上上下文。
 5. **多 @ / 转告**：`@你的机器人 你查一下高斯生平，然后告诉NULL，同时也提醒我待会查山姆生平`
    → 回复里 `@NULL` 和 `@NONE` 两段都有正文；桥日志出现 `共2个`。
+6. **旧图按需查**：先发一张图（拿到 `[图片 #ID]`），等 L1 滚出后问
+   `@你的机器人 帮我看看之前那张图` → 模型应调用 `list_images` / `look_image`；
+   AstrBot 日志出现 `Agent 使用工具: ['list_images', 'look_image']`，且回复不转发图片。
 
 失败时按顺序定位：
 

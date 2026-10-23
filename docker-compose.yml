@@ -10,14 +10,20 @@
 # docs/wechatpadpro-notes.md，需要时按那份文档单独起。
 #
 # 常用命令：
-#   docker compose up -d astrbot      # 首次启动 / 有改动时重建
-#   docker compose restart astrbot    # 改了插件或面板配置后重启
-#   docker compose logs -f astrbot    # 跟日志
-#   docker compose down               # 停止（数据在 ./data/astrbot，不会丢）
+#   docker compose up -d --build astrbot   # 首次启动 / 重建镜像（含图片上限补丁）
+#   docker compose up -d astrbot           # 已有本地镜像时启动
+#   docker compose restart astrbot         # 改了插件或面板配置后重启
+#   docker compose logs -f astrbot         # 跟日志
+#   docker compose down                    # 停止（数据在 ./data/astrbot，不会丢）
 
 services:
   astrbot:
-    image: soulter/astrbot:latest
+    # 本地镜像：Dockerfile.astrbot 在构建时直接修改 media_utils.py 的图片上限
+    # 首次启动/更新基础镜像后：docker compose up -d --build astrbot
+    build:
+      context: .
+      dockerfile: Dockerfile.astrbot
+    image: webot-astrbot:local
     container_name: webot-astrbot
     restart: always
     security_opt:

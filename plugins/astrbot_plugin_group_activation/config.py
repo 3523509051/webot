@@ -35,7 +35,10 @@ class PluginConfig:
     history_max_chars: int = 12000      # L2 粗略字符预算（不是精确 token）
     l1_header: str = (
         "# 群聊背景（下面是本群最近的发言，每行开头「」里的就是说话的人；"
-        "仅供参考语境，不要把每行都当成需要回复的问题）"
+        "仅供参考语境，不要把每行都当成需要回复的问题；"
+        "「[图片 #ID]」是缓存编号：需要看内容时**直接调用 look_image**，"
+        "不要先回复「我看不到图」「我去调出来看看」之类的解释或预告；"
+        "工具返回图片后再给最终回答）"
     )
 
     # ── 参与决策：让 LLM 有权「不发言」────────────────
@@ -206,6 +209,11 @@ class PluginConfig:
     # 「先发图、再问一句」：后一条纯文字消息拿不到图（图片只在它自己那条事件里送给模型），
     # 所以把图缓存下来补挂到后一条的请求上；这个时长内有效（只补挂一次）。
     image_carry_seconds: float = 30.0
+    # 缓存图片按编号查看：每轮最多取几张 / 最多列几次目录（防工具循环）
+    image_look_max_per_turn: int = 10
+    image_list_max_per_turn: int = 2
+    image_list_limit: int = 20
+
     bot_names: list[str] = field(default_factory=list)
     # ↑ 机器人自己的昵称补充（自动从桥的 OneBot get_login_info 取，这里只补别名/错字）
 
