@@ -1052,6 +1052,159 @@ class WeChatClient:
         log.warning("UIA @ 未成功，本条按普通文本发送（不发 @，也不动你的其它窗口）")
         return self.send_text(group_name, before + after)
 
+    def _uia_send_parts(self, group_name: str, parts: list[dict]) -> bool | SendResult:
+        """按「文本 / @」段顺序发送：粘文本 → 插 @ 令牌 → 粘下一段 → …。
+
+        parts 由 main.parse_mentions 生成；每个 at 段都要走一次微信成员弹层点选。
+        任何一次 @ 失败都放弃所有 @，退化为纯文本（before + after），
+        避免出现「@ 令牌只插了一半」的畸形消息。
+        """
+        from wechatauto.uia_driver import rhythm
+
+        t0 = time.time()
+        if self.verify_send and not (
+            callable(getattr(self.gui, "_send_watermark", None))
+            and callable(getattr(self.gui, "_verify_sent", None))
+        ):
+            return False  # old GUI versions: use public send_msg verification instead
+        try:
+            uia = self.gui._get_uia()
+        except Exception as e:  # noqa: BLE001
+            log.debug("取 UIA 失败: %s", e)
+            return False
+        if uia is None:
+            return False
+
+        # 必须先把微信弄到前台：SendKeys 和鼠标点击都是发给前台窗口的。
+        try:
+            if not uia.ensure_window():
+                log.info("UIA @ 置前失败：微信窗口不可用（锁屏？）")
+                return False
+        except Exception as e:  # noqa: BLE001
+            log.warning("UIA @ 置前异常: %s", e)
+            return False
+
+        same = False
+        try:
+            same = self._same_chat(uia.current_chat(), group_name)
+        except Exception as e:  # noqa: BLE001
+            log.debug("探测当前会话失败: %s", e)
+
+        edit = None
+        try:
+            edit = uia._chat_input(getattr(uia, "_win", None))
+        except Exception as e:  # noqa: BLE001
+            log.debug("定位输入框失败: %s", e)
+        if edit is None:
+            return False
+
+        if not same:
+            try:
+                if not uia.open_chat(group_name):
+                    return False
+            except Exception as e:  # noqa: BLE001
+                log.debug("open_chat 失败: %s", e)
+                return False
+
+        at_names = [p["name"] for p in parts if p.get("type") == "at"]
+        text_parts = [
+            str(p.get("text") or "")
+            for p in parts
+            if p.get("type") == "text" and str(p.get("text") or "").strip()
+        ]
+        at_ok = True
+        first = True
+        try:
+            # 第一段是文本 → 粘贴时顺便聚焦并清空；第一段是 @ → 点输入框后清空。
+            # 之后的文本段**不能再 _click_ctrl**：点击会把光标从刚插入的 @ 后面挪走，
+            # 第二个 @ 后面的正文就会插错位置甚至丢失。只 SetFocus + Ctrl+V 追加。
+            for part in parts:
+                if part.get("type") == "text":
+                    txt = str(part.get("text") or "")
+                    if txt:
+                        if first:
+                            uia._paste_into(edit, txt, clear=True)
+                            first = False
+                        else:
+                            try:
+                                edit.SetFocus()
+                            except Exception:  # noqa: BLE001
+                                pass
+                            uia._clip_set(txt)
+                            edit.SendKeys("{Ctrl}v", waitTime=0.05)
+                else:
+                    if not self._uia_input_at(
+                        uia,
+                        edit,
+                        str(part["name"]),
+                        clear_first=first,
+                    ):
+                        at_ok = False
+                        break
+                    first = False
+        except Exception as e:  # noqa: BLE001
+            log.warning("UIA 多 @ 粘贴/选人失败: %s", e)
+            return False
+
+        mark = self.gui._send_watermark(group_name) if self.verify_send else None
+        try:
+            if not at_ok:
+                # @ 失败：弹层可能还开着，回车会被它消费；先 Esc，再干净地
+                # 重新粘贴「去掉所有 @ 名字」的正文。
+                edit.SendKeys("{Esc}", waitTime=0.05)
+                time.sleep(0.15)
+                plain = "".join(
+                    str(p.get("text") or "")
+                    for p in parts
+                    if p.get("type") == "text"
+                )
+                if not plain.strip():
+                    log.warning("多 @ 全部失败，且没有正文可发")
+                    return False
+                uia._paste_into(edit, plain, clear=True)
+                time.sleep(0.2)
+            rhythm.gate("send")
+            rhythm.nap(0.2)
+            edit.SendKeys("{Enter}", waitTime=0.05)
+        except Exception as e:  # noqa: BLE001
+            log.warning("UIA 发送结果不确定: %s", e)
+            return SendResult("unknown", str(e))
+
+        if self.verify_send:
+            check = [p.strip() for p in text_parts if p.strip()]
+            outcome = self._confirm_delivery(check, group_name, mark, "contains")
+            if not outcome:
+                return outcome
+
+        log.info(
+            "[发送@] %s -> %s（UIA %.2fs, 路径=%s, @=%s, 共%d个）: %s",
+            group_name,
+            "、".join(at_names),
+            time.time() - t0,
+            "direct" if same else "switch",
+            "成" if at_ok else "没成→去掉@按纯文字发",
+            len(at_names),
+            "".join(str(p.get("text") or "") for p in parts)[:50],
+        )
+        return True
+
+    def send_at_multi(self, group_name: str, parts: list[dict]) -> SendResult:
+        """发送带一个或多个真实 @ 的正文；失败退化为去掉 @ 的纯文本。"""
+        outcome = self._uia_send_parts(group_name, parts)
+        if isinstance(outcome, SendResult):
+            return outcome
+        if outcome:
+            return SendResult("sent")
+        plain = "".join(
+            str(p.get("text") or "") for p in parts if p.get("type") == "text"
+        )
+        log.warning(
+            "UIA 多 @ 未成功，本条按普通文本发送（不发 @，也不动你的其它窗口）"
+        )
+        if not plain.strip():
+            return SendResult("failed", "所有 @ 都未成功，且没有可发送的正文")
+        return self.send_text(group_name, plain)
+
     def debug_dump(self, user: str, limit: int = 3) -> list[dict]:
         """调试用：打印某会话原始消息结构。"""
         try:

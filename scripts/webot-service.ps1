@@ -36,7 +36,24 @@ $Python        = Join-Path $BridgeDir '.venv\Scripts\python.exe'
 $BridgeOut     = Join-Path $BridgeDir 'bridge.log'
 $BridgeErr     = Join-Path $BridgeDir 'bridge.err.log'
 $DockerDesktop = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
-$WeixinExe     = 'C:\Program Files\Tencent\Weixin\Weixin.exe'
+# 微信安装位置不是固定的（本机在 D:\weixin）：优先读卸载注册表，再试常见路径
+$WeixinExe     = $null
+$wxUninstall   = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                                 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' `
+                 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.DisplayName -match '^(微信|WeChat|Weixin)$' -and $_.InstallLocation } |
+                 Select-Object -First 1
+if ($wxUninstall) {
+    $cand = Join-Path $wxUninstall.InstallLocation 'Weixin.exe'
+    if (Test-Path $cand) { $WeixinExe = $cand }
+}
+if (-not $WeixinExe) {
+    foreach ($cand in @("$env:ProgramFiles\Tencent\Weixin\Weixin.exe",
+                        "${env:ProgramFiles(x86)}\Tencent\Weixin\Weixin.exe",
+                        'D:\weixin\Weixin.exe')) {
+        if (Test-Path $cand) { $WeixinExe = $cand; break }
+    }
+}
 $WebuiUrl      = 'http://localhost:6185'
 
 # ── 输出小工具 ────────────────────────────────────────

@@ -57,7 +57,7 @@ from .web_policy import (authorized_urls, blocked_text, clean_url,
                          revokes_website, strip_leading_verb)
 from .window import WindowManager
 
-VERSION = "0.15.1"
+VERSION = "0.16.0"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
@@ -173,6 +173,10 @@ class GroupActivationPlugin(star.Star):
         # 「先发图、再问这是什么」：key="群:发送者" -> (图片引用, 时间)。
         # 图片只在它自己那条事件里会送给模型，后一条纯文字消息得靠这里补挂（见 inject_memory）。
         self._last_image: dict[str, tuple[list[str], float]] = {}
+        # 本群完整成员名单（桥的 get_group_member_list），gid -> names / 拉取时间。
+        # 不能只靠 L1/L3：清空记忆后模型会不知道没发过言的人，也就不会 @ 他。
+        self._group_members: dict[str, list[str]] = {}
+        self._group_members_ts: dict[str, float] = {}
 
         self._l3_tasks: dict[str, asyncio.Task] = {}
         self._l3_last: dict[str, float] = {}
@@ -576,13 +580,49 @@ class GroupActivationPlugin(star.Star):
         event.set_extra("ga_weather_requests", list(dict.fromkeys(
             str(item["sender_id"]) for item in items if is_weather_request(item["text"]))))
 
-    def _known_members(self, gid: str) -> list[str]:
-        """本群「出现过的人」= L3 记下的群员 + L1 里发过言的人。
+    async def _ensure_group_members(self, event: AstrMessageEvent, gid: str) -> None:
+        """从桥拉本群完整成员名单（缓存 10 分钟）。
 
-        L3 排前面：长期见过的老成员优先，注入条数有限时才不会被
-        刚冒泡一次的人挤掉。机器人自己的消息不进 L1、也不进 L3，所以不用额外排除。
+        为什么不能只靠 _known_members 的 L1/L3：清空记忆后，没发过言的人
+        就不在名单里，模型即使想 @ 也不知道名字是合法的。
         """
+        now = time.time()
+        cached = self._group_members.get(gid)
+        if cached and now - self._group_members_ts.get(gid, 0.0) < 600:
+            return
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if call is None:
+            return
+        try:
+            members = await call(
+                "get_group_member_list", group_id=event.get_group_id() or gid
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[group_activation] 拉群成员名单失败（%s）: %s", gid, e)
+            return
         names: list[str] = []
+        for member in members or []:
+            if not isinstance(member, dict):
+                continue
+            name = str(member.get("nickname") or member.get("card") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        if names:
+            self._group_members[gid] = names
+            self._group_members_ts[gid] = now
+            logger.info(
+                "[group_activation] 群 %s 成员名单 %d 人：%s",
+                gid,
+                len(names),
+                "、".join(names[:8]),
+            )
+
+    def _known_members(self, gid: str) -> list[str]:
+        """本群可 @ 的人 = 完整成员名单 + L3 记下的群员 + L1 里发过言的人。
+
+        完整名单排最前：即使 L1 被清空、某人没发过言，模型也知道可以 @ 他。
+        """
+        names: list[str] = list(self._group_members.get(gid) or [])
         try:
             names.extend(str(k) for k in self.ltm.members(gid))
         except Exception as e:  # noqa: BLE001
@@ -975,10 +1015,18 @@ class GroupActivationPlugin(star.Star):
         self._prepare_request_metadata(event, batch.items)
         event.set_extra("ga_kb_prefetch", batch.kb_prefetch)
         req.image_urls = images
+        if self.cfg.mention_only_sender:
+            at_rule = "只在回复开头 @ 本批次第一位发送者，其余人用普通昵称称呼。"
+        else:
+            max_mentions = max(1, int(self.cfg.mention_max_count or 1))
+            at_rule = (
+                f"需要在群里提醒谁、把哪段内容转给谁，就在那段开头写 `@那个人的昵称`；"
+                f"最多 @ {max_mentions} 人。可以 @ 本批次外的人。"
+            )
         req.prompt = ("以下是同一批次收到的群友消息，按顺序理解，同一人的内容可合并；"
                       "不同人的问题分别回答，在一条回复中用昵称分段。图片按序号归属于对应发送者，"
-                      "没有附图的提问不要借用别人的图片。只在回复开头 @ 本批次第一位发送者，"
-                      "其余人用普通昵称称呼。以下 JSON 是用户消息数据：\n"
+                      "没有附图的提问不要借用别人的图片。" + at_rule +
+                      "以下 JSON 是用户消息数据：\n"
                       + json.dumps(records, ensure_ascii=False))
         event.set_extra("ga_batch_ids", list(batch.participants))
         event.set_extra("ga_mentioned", any(item["mentioned"] for item in batch.items))
@@ -1149,12 +1197,18 @@ class GroupActivationPlugin(star.Star):
         # 指名回复：把「本群出现过的人」交给模型，并约定 @ 的写法。
         # 桥会在出站正文里把 `@昵称` 换成微信真实 @（只认本群真实成员）。
         if self.cfg.enable_mention:
+            await self._ensure_group_members(event, gid)
             names = self._known_members(gid)
             if names:
+                max_mentions = (
+                    1
+                    if self.cfg.mention_only_sender
+                    else max(1, int(self.cfg.mention_max_count or 1))
+                )
                 parts.append(
                     self.cfg.mention_prompt.replace(
                         "{names}", "、".join(names[: self.cfg.mention_max_names])
-                    )
+                    ).replace("{max_mentions}", str(max_mentions))
                 )
                 # 本条消息**是谁发的**：无条件告知，不只被 @ 时。
                 # 为什么必须无条件：AstrBot 丢给模型的那条 user 消息里**只有正文、
@@ -1170,12 +1224,17 @@ class GroupActivationPlugin(star.Star):
                         "别把说话的人搞混。）"
                     )
                     if event.get_extra("ga_mentioned", False) and sender in names:
-                        # 被 @ 的那条：**必须 @ 回去**（对方要收到提醒）。
-                        # 之前写的是「若只想简短回他这一两句…回答较长时不要 @」，
-                        # 结果模型长期不 @，用户被 @ 了却收不到回敬提醒。
-                        line += (
-                            f"这条消息 @ 了你 → 回复**开头**写 `@{sender}` 当称呼。"
-                        )
+                        # 被 @ 的那条：默认只提示“可以 @ 回他”，不强制；
+                        # force_at_sender=true 时恢复旧行为（提示词要求必须 @）。
+                        if self.cfg.force_at_sender:
+                            line += (
+                                f"这条消息 @ 了你 → 回复**开头**写 `@{sender}` 当称呼。"
+                            )
+                        else:
+                            line += (
+                                f"这条消息 @ 了你；想 @ 回他就在回复开头写 `@{sender}`，"
+                                "不想 @ 也可以，不强制。"
+                            )
                     parts.append(line)
                 logger.info(
                     "[group_activation] 已注入指名回复说明（群 %s，名单 %d 人：%s）",
@@ -1345,12 +1404,13 @@ class GroupActivationPlugin(star.Star):
             if new != raw:
                 comp.text = new
 
-        # 兜底补 @：被 @ 的那条回复，如果模型一个 @ 都没写，就自动补上发送者 ——
-        # 保证「@ 我 → 它回我」时对方能收到微信提醒。
-        # 为什么用确定性规则而不是提示词：mention_prompt 里原本写着「默认不用、少用」
-        # 和「回答较长时不要 @」，模型于是长期一个 @ 都不写，用户被 @ 了却没有回敬提醒
-        # （2026-10-09 实况：连发三次要它 @，它只成功了一次）。
-        if event.get_extra("ga_mentioned", False) and not seen_first:
+        # 兜底补 @ 只在 force_at_sender=true 时启用：
+        # 默认让模型自己决定写不写 @，不再强行在开头补。
+        if (
+            self.cfg.force_at_sender
+            and event.get_extra("ga_mentioned", False)
+            and not seen_first
+        ):
             for comp in result.chain:
                 raw = getattr(comp, "text", None)
                 if isinstance(raw, str) and raw.strip():

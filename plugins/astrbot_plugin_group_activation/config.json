@@ -21,9 +21,7 @@
   "merge_seconds": 5.0,
   "skip_contentless_messages": true,
   "name_link_seconds": 45.0,
-  "bot_names": [
-    "hitokami"
-  ],
+  "bot_names": [],
   "image_carry_seconds": 30.0,
   "strip_history_images": true,
   "stripped_image_placeholder": "[图片]",
@@ -36,9 +34,13 @@
   "kb_retrieval_timeout": 5.0,
   "search_enable": true,
   "search_daily_limit": 50,
-  "amap_enable": true,
+  "amap_enable": false,
   "amap_daily_limit": 100,
   "website_enable": true,
   "website_daily_limit": 300,
-  "website_moderation_timeout": 15.0
+  "website_moderation_timeout": 15.0,
+  "kb_enable": false,
+  "mention_only_sender": false,
+  "force_at_sender": false,
+  "mention_max_count": 3
 }

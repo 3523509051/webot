@@ -16,7 +16,9 @@ import sys
 import time
 from pathlib import Path
 
-CONFIG = Path(r"C:\webot\data\astrbot\cmd_config.json")
+# 仓库根目录按本文件位置推算，避免仓库不在 C:\webot 时写错路径
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG = ROOT / "data" / "astrbot" / "cmd_config.json"
 
 PLATFORM_NAME = "OneBot v11"
 PLATFORM_CONFIG = {
