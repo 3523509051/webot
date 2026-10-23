@@ -58,7 +58,7 @@ from .web_policy import (authorized_urls, blocked_text, clean_url,
                          revokes_website, strip_leading_verb)
 from .window import WindowManager
 
-VERSION = "0.17.0"
+VERSION = "0.18.0"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
@@ -365,7 +365,10 @@ class GroupActivationPlugin(star.Star):
                             item["images"] = list(refs)
                             break
                 return
-            if mentioned or (participant and text and not _is_contentless(label)):
+            if mentioned or (
+                text and not _is_contentless(label)
+                and (participant or self.cfg.preflight_enable)
+            ):
                 if starts_count_task(text):
                     self._number_tasks[frag_key] = NumberTask(text, now)
                 batch.add(self._batch_item(event, label, mentioned, now), tick)
@@ -422,9 +425,9 @@ class GroupActivationPlugin(star.Star):
                 label[:20],
             )
 
-        # 只对刚刚直接与机器人交谈的发送者放行明显追问。否则让模型产出
-        # [PASS] 仍会产生一次完整的计费请求；本地过滤可以把它降为零次。
-        if self.cfg.local_routing and not mentioned:
+        # preflight 开启时，窗口内的非 @ 消息先放进来，由 L1-only 分类器决定；
+        # 关闭时才沿用原来的本地“非续话”过滤。
+        if self.cfg.local_routing and not mentioned and not self.cfg.preflight_enable:
             if not should_consider_followup(text, linked=linked):
                 logger.info("[group_activation] 群 %s 本地略过非续话（%s）：%r", gid, sender, label[:40])
                 return
@@ -970,16 +973,21 @@ class GroupActivationPlugin(star.Star):
         self.wm.sleep(gid)
         logger.info("[group_activation] 群 %s 旧批次、临时任务及后台提炼已取消", gid)
 
+    @staticmethod
+    def _is_quoted_image(text: str) -> bool:
+        """消息正文是否带「（引用 X 的图片）」标记。"""
+        return bool(re.search(r"引用\s*.{1,60}?的图片", text or "", re.S))
+
     def _batch_item(self, event, label: str, mentioned: bool, now: float) -> dict:
         sender_id = str(event.get_sender_id() or "")
         refs = list(self._image_refs(event))
         text = re.sub(r"\[At:\d+\]", "", event.message_str or "").strip()
         wants = wants_image(text) or bool(mentioned and not text)
         key = f"{event.get_group_id()}:{sender_id}"
+        cached, ts = self._last_image.get(key, ([], 0.0))
+        recent = list(cached) if cached and now - ts <= self.cfg.image_carry_seconds else []
         if not refs and wants:
-            cached, ts = self._last_image.get(key, ([], 0.0))
-            if now - ts <= self.cfg.image_carry_seconds:
-                refs = list(cached)
+            refs = list(recent)
         return {"sender_id": sender_id, "sender": event.get_sender_name() or sender_id,
                 "text": text or event.get_extra("ga_bare_at_ctx") or label or "[空 @]",
                 "mentioned": mentioned, "required": mentioned or is_explicit_request(text) or search_intent(text) is not None or is_weather_request(text),
@@ -987,6 +995,8 @@ class GroupActivationPlugin(star.Star):
                 "permission_version": self._search_permission_versions.get(key, 0),
                 "website_version": self._website_permission_versions.get(key, 0),
                 "wants_images": wants, "images": refs,
+                "recent_images": recent,
+                "quoted_image": self._is_quoted_image(text),
                 "image_key": key}
 
     async def _finish_batch(self, event, req, batch: MessageBatch) -> None:
@@ -1001,23 +1011,31 @@ class GroupActivationPlugin(star.Star):
         if batch.cancelled or not self._event_is_current(event):
             raise asyncio.CancelledError()
         # Freeze synchronously, before accepting any messages for the next batch.
-        images = list(req.image_urls or [])
+        # 只有「@ + 引用图片」才自动带图；@ 带新图、窗口期图片都只保留 L1 编号，
+        # 由模型按需 look_image。这样群里无关表情包不会污染请求。
+        images = []
+        image_request = False
         records = []
         for item in batch.items:
+            attach = bool(
+                item["mentioned"]
+                and item.get("quoted_image")
+                and item.get("images")
+            )
+            refs = list(item.get("images") or []) if attach else []
+            if attach:
+                image_request = True
             numbers = []
-            for ref in item["images"]:
+            for ref in refs:
                 if ref not in images:
                     images.append(ref)
                 numbers.append(images.index(ref) + 1)
-            if numbers:
-                cached, _ = self._last_image.get(item["image_key"], ([], 0.0))
-                if cached == item["images"]:
-                    self._last_image.pop(item["image_key"], None)
             records.append({"发送者": item["sender"], "发送者ID": item["sender_id"],
                             "内容": item["text"], "明确@": item["mentioned"],
                             "该发送者附图序号": numbers})
         self._prepare_request_metadata(event, batch.items)
         event.set_extra("ga_kb_prefetch", batch.kb_prefetch)
+        event.set_extra("ga_image_request", image_request)
         req.image_urls = images
         if self.cfg.mention_only_sender:
             at_rule = "只在回复开头 @ 本批次第一位发送者，其余人用普通昵称称呼。"
@@ -1045,6 +1063,79 @@ class GroupActivationPlugin(star.Star):
         logger.info("[group_activation] 群 %s 批次就绪：%d 条，%d 人，%d 张图，等待 %.1fs",
                     gid, len(records), len(batch.participants), len(images),
                     time.monotonic() - batch.started)
+
+    async def _preflight_join(self, event: AstrMessageEvent, batch):
+        """L1-only 接话判定。
+
+        返回 True = 分类器判定 JOIN；False = PASS；None = 本类请求不分类
+        （@、带图、明确请求、关闭、或分类器失败 fail-open）。
+        不注入 L2/L3/L4、不传图片，只让分类器判断“这句话要不要接”。
+        """
+        if not self.cfg.preflight_enable:
+            return None
+        if any(event.get_extra(k, False) for k in
+               ("ga_required", "ga_mentioned", "ga_image_request")):
+            return None
+        gid = event.get_group_id()
+        if not gid:
+            return None
+        if not self._event_is_current(event):
+            return False
+        if batch and getattr(batch, "items", None):
+            batch_text = "\n".join(
+                f"{it['sender']}: {it['text']}" for it in batch.items
+            )
+        else:
+            batch_text = f"{event.get_sender_name() or '?'}: {event.message_str or ''}"
+        l1 = self.wm.render_l1(gid, exclude_last=False) or "（无）"
+        last_bot = (self._last_reply.get(gid) or "（无）")[:600]
+        provider = await self.context.get_using_provider_async()
+        if not provider:
+            logger.warning("[group_activation] preflight 跳过：没有可用模型，放行完整请求")
+            return None
+        system = (
+            "你是群聊接话判定器，只判断机器人现在是否应该接这一批消息。\n"
+            "JOIN：@ 或明确请求；同一发送者紧接着延续与机器人的对话；"
+            "评论、纠正、追问机器人上一句或刚发的图；明显需要它回应。\n"
+            "PASS：别人之间的对话、无关闲聊、纯玩梗刷屏、拿不准。\n"
+            "有 [图片 #ID] 只表示有人发过图，不代表你已经看到内容；"
+            "不要因为没看到图就假设，也不要描述图片。\n"
+            "只输出 JOIN 或 PASS，不要解释。"
+        )
+        prompt = (
+            "# 机器人上一句回复\n" + last_bot +
+            "\n\n# 群聊背景（L1）\n" + l1 +
+            "\n\n# 本批新消息\n" + batch_text +
+            "\n\n只输出 JOIN 或 PASS。"
+        )
+        started = time.monotonic()
+        try:
+            resp = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, system_prompt=system),
+                timeout=max(1.0, float(self.cfg.preflight_timeout)),
+            )
+            raw = (getattr(resp, "completion_text", "") or "").strip()
+            if not raw and getattr(resp, "result_chain", None):
+                raw = resp.result_chain.get_plain_text().strip()
+            upper = raw.upper().strip("[]()【】 \t\r\n")
+            if upper.startswith("PASS") or "\nPASS" in upper:
+                decision = False
+            elif upper.startswith("JOIN") or "\nJOIN" in upper:
+                decision = True
+            else:
+                logger.warning("[group_activation] preflight 输出无法解析，fail-open：%r", raw[:80])
+                return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[group_activation] preflight 失败，fail-open：%s", e)
+            return None
+        logger.info(
+            "[group_activation] preflight %s（群 %s，%.0fms）：%r",
+            "JOIN" if decision else "PASS",
+            gid,
+            (time.monotonic() - started) * 1000,
+            batch_text[:80],
+        )
+        return decision
 
     # ── 2. 记忆注入 ───────────────────────────────────
     @filter.on_llm_request()
@@ -1114,10 +1205,65 @@ class GroupActivationPlugin(star.Star):
         if batch:
             await self._finish_batch(event, req, batch)
 
+        quoted_image = self._is_quoted_image(event.message_str or "")
+        image_request = bool(event.get_extra("ga_image_request", False)) or bool(
+            event.get_extra("ga_mentioned", False)
+            and quoted_image
+            and req.image_urls
+        )
+        if not image_request:
+            # 只有 @ + 引用图片自动带图；其余（@ 新图、窗口图）只保留 L1 编号。
+            if req.image_urls:
+                logger.info(
+                    "[group_activation] 非 @ 引用图片请求剥离当前图（群 %s，%d 张），保留 L1 编号",
+                    gid,
+                    len(req.image_urls),
+                )
+            req.image_urls = []
+        event.set_extra("ga_image_request", image_request)
+
+        # 纯文字窗口消息：先 L1-only 判定；PASS 直接停止，JOIN 才继续完整请求。
+        decision = await self._preflight_join(event, batch)
+        if decision is False:
+            logger.info(
+                "[group_activation] preflight PASS（群 %s），跳过完整请求", gid
+            )
+            event.stop_event()
+            return
+        if decision is True:
+            event.set_extra("ga_joined", True)
+            # 分类器已决定接话：完整模型不再允许 [PASS]。
+            event.set_extra("ga_required", True)
+            event.set_extra("ga_decidable", False)
+            if req.prompt:
+                req.prompt += (
+                    "\n（本批已由接话判定器判定为 JOIN；直接回答，"
+                    "不要输出 [PASS]。）"
+                )
+        if not self._event_is_current(event):
+            raise asyncio.CancelledError()
+
+        hist_turns = (
+            self.cfg.image_history_max_turns
+            if image_request
+            else self.cfg.history_max_turns
+        )
+        hist_chars = (
+            self.cfg.image_history_max_chars
+            if image_request
+            else self.cfg.history_max_chars
+        )
+        if image_request:
+            logger.info(
+                "[group_activation] 图片请求：L2 压缩为 %d 轮 / %d 字（群 %s）",
+                hist_turns,
+                hist_chars,
+                gid,
+            )
         req.contexts = compact_contexts(
             req.contexts or [],
-            max_turns=self.cfg.history_max_turns,
-            max_chars=self.cfg.history_max_chars,
+            max_turns=hist_turns,
+            max_chars=hist_chars,
         )
 
         parts: list[str] = []

@@ -57,16 +57,19 @@
 
 ### 新功能与升级
 
-当前版本 **v0.17.0**：图片按群独立编号、全量缓存；L1 只记 `[图片 #ID]`，AI 需要时调用 `list_images` / `look_image` 查看；默认不降分辨率；支持一条回复 @ 多个群成员、@ 未发言成员、完整群成员名单；先图后问的桥侧兜底；后台必应浏览器搜索、高德天气与旅游路线、网页正文读取。
+当前版本 **v0.18.0**：纯文字窗口消息先走 L1-only 接话判定，PASS 跳过完整请求；@ / 明确请求不分类；只有 **@ + 引用图片** 自动带图，其余图片只给 L1 编号、按需 `look_image`；图片请求压缩 L2；图片按群独立编号、全量缓存；默认不降分辨率；支持多 @、完整成员名单、先图后问兜底、后台搜索/天气/网页读取。
 
-已有服务器请按 [新功能升级指南](docs/upgrade-v0.17.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
+已有服务器请按 [新功能升级指南](docs/upgrade-v0.18.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
 ### 消耗控制
 
-- v0.17.0 图片编号与按需查看：桥按**每群独立编号**缓存图片，默认**保留所有**（不自动删除）；L1 记 `[图片 #12]`。模型需要旧图时调用 `list_images` 找编号、`look_image` 取图；当前批次已经附带的图不会重复取。L1 只保留最近 10 条，更早的图靠 `list_images` 按发送者/时间检索。
+- v0.18.0 接话 preflight：@ 后的 30 秒窗口内，非 @、非明确请求的**纯文字**批次先用 L1 + 本批 + 机器人上一句判定；PASS 直接停止，不调用完整模型；JOIN 才带 L2/L3/L4 回答。@ 和明确请求直接完整回答，不加分类延迟。
+- v0.18.0 窗口图片：只有 **@ + 引用图片** 自动附图；@ 配新图、窗口期非 @ 图都只保留 `[图片 #ID]`，模型需要时调用 `look_image`。
+- v0.18.0 图片请求压 L2：只有 **@ + 引用图片** 的请求只带最近 `image_history_max_turns=4` 轮 / `image_history_max_chars=6000` 字；纯文字、@ 新图仍 8 轮 / 12000 字。
+- v0.17.0 图片编号与按需查看：桥按**每群独立编号**缓存图片，默认**保留所有**（不自动删除）；L1 记 `[图片 #12]`。模型需要旧图时调用 `list_images` 找编号、`look_image` 取图。
 - v0.17.0 防循环：同一编号重复取会返回“已提供”；过期/不存在直接终止；`list_images` 每轮最多 2 次、最多 50 条；`look_image` 每轮最多 10 张（可配置）。工具返回的图只用于本轮回答，提示词禁止转发。
 - v0.17.0 分辨率：桥 `image_max_edge=0`、`image_max_bytes=10000000`；AstrBot `provider_settings.image_compress_options.max_size=16384`。`Dockerfile.astrbot` 在**镜像构建时**直接把 `MODEL_IMAGE_MAX_BYTES` 从 512KB 改成 8MB；用 `docker compose up -d --build astrbot` 重建镜像后生效。
-- v0.16.1 多图与记忆：L1 只记录编号/占位，不存图片本体；L2 历史图默认剥离（`strip_history_images=true`），旧图不会每轮重发；只有当前批次图片会送给模型，提示词要求“没被问到的图不主动提、不逐张介绍”。
+- v0.16.1 多图与记忆：L1 只记录编号/占位，不存图片本体；L2 历史图默认剥离（`strip_history_images=true`），旧图不会每轮重发；只有 @ / 明确请求的当前图会送给模型，窗口图只给编号、按需 `look_image`；提示词要求“没被问到的图不主动提、不逐张介绍”。
 - v0.16.0 多 @：模型在正文里写 `@昵称`，桥按顺序逐个用 UIA 点选插入真实 @（默认最多 3 个）。插件每次请求向桥拉取**完整群成员名单**，没发过言的成员也能被 @。相关配置：`mention_only_sender`、`mention_max_count`、`force_at_sender`，以及桥的 `wechat.max_mentions`。
 - v0.16.0 先图后问兜底：AstrBot 对纯图片事件不一定触发插件缓存时，桥按「群 + 发送者」缓存 30 秒；同一人随后问图时，把图并入同一条事件再上报。
 - v0.16.0 路径修正：脚本按仓库自身位置解析，不再硬编码 `C:\webot`；`webot-service.ps1` 从卸载注册表自动识别微信安装目录。
@@ -91,7 +94,7 @@
 - AstrBot 默认还有 **512KB** 模型输入上限；本仓库的 `Dockerfile.astrbot` 在构建镜像时直接改成 8MB。更新基础镜像后执行 `docker compose build --pull astrbot`，再 `docker compose up -d --force-recreate astrbot`。
 - 图片缓存默认**保留所有**（`image_cache_keep=-1`，不自动删除）。磁盘会持续增长，请自己定期查看 `bridge\cache\image` 大小；需要清理时手动处理，桥不会自动删。
 - L1 不存图片本体；L2 历史图默认剥离（`strip_history_images=true`），旧图不会每轮重发。只有**当前批次**的图片会随请求送给模型；提示词要求只描述被问到的图，未被问到的图不主动提、不逐张介绍。
-- 每次请求的原生历史限最近 8 轮、约 12000 个字符，并把其中旧图片换成占位；本轮的 L1/L3/L4 随当前请求提供。`plugins/astrbot_plugin_group_activation/config.json` 可调 `local_routing`、`history_max_turns`、`history_max_chars`、`image_carry_seconds`。字符数只用于粗略限额，实际 token 由模型计费端确定。
+- 每次请求的原生历史：文字请求限最近 8 轮 / 约 12000 个字符；带当前图的请求压到 4 轮 / 6000 个字符。旧图片换成占位；本轮的 L1/L3/L4 随当前请求提供。`plugins/astrbot_plugin_group_activation/config.json` 可调 `local_routing`、`preflight_enable`、`history_max_turns`、`history_max_chars`、`image_history_max_turns`、`image_history_max_chars`、`image_carry_seconds`。字符数只用于粗略限额，实际 token 由模型计费端确定。
 - 当前版本的路由使用本地关键词和近期对话关系，因此一些含蓄的插话可能被漏掉；可以直接 @ 它，或把问题问完整。用 `/gareset` 可以新开原生会话，清除既有的长历史。
 
 改插件设置后运行 `restart-astr.cmd`；改桥的 `image_max_edge` 后运行 `restart-bridge.cmd`。观察 AstrBot 日志中的「本地略过非续话」和「已把上一条的图补挂」，再用服务商用量记录核对节省效果。
@@ -350,7 +353,7 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 ```
 
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
-`[group_activation] 已加载 v0.17.0 …`
+`[group_activation] 已加载 v0.18.0 …`
 
 #### 4.1 插件参数（可选，按需改）
 
@@ -368,6 +371,9 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 | `llm_decides_participation` | true | 放行后模型仍可输出 `[PASS]` 保持沉默 |
 | `merge_seconds` / `merge_max_seconds` | 5 / 30 | 碎片合并的静默等待 / 最长等待 |
 | `history_max_turns` / `history_max_chars` | 8 / 12000 | 原生多轮历史的上限 |
+| `image_history_max_turns` / `image_history_max_chars` | 4 / 6000 | 带当前图的请求使用的 L2 上限 |
+| `preflight_enable` | true | 纯文字窗口消息先做 L1-only 接话判定 |
+| `preflight_timeout` | 8 | 接话判定超时（秒），失败时 fail-open |
 | `image_carry_seconds` | 30 | 「先发图、再问图」的图片跟随窗口 |
 | `image_look_max_per_turn` | 10 | 每轮最多调用几次 `look_image`（防工具循环） |
 | `image_list_max_per_turn` | 2 | 每轮最多调用几次 `list_images` |
@@ -549,8 +555,8 @@ notepad config.json
 
 - **L1 存编号/占位**：群聊背景里图片/表情包记为 `[图片 #12]`（缓存编号）或 `[图片]`（未入缓存），不含图片数据，不会把历史图重新送进模型。
 - **L2 默认剥图**：`strip_history_images=true` 会把会话历史里的 `image_url` 换成 `[图片]`；否则每轮都会重发旧图，token 会随历史线性增长。
-- **当前批次的多张图会一起送**：同一批消息里各发送者带的图会按序号放进本次请求，模型能看到全部；提示词要求只描述**被明确问到**的图，没被问到的图不主动提、不逐张介绍。
-- **窗口外的单图**：单发图先缓存；同一人 30 秒内追问「这是什么」才补挂（插件 `image_carry_seconds` + 桥 `wechat.image_carry_seconds`）。更早的图走 §5.8 的编号检索。
+- **只有 @ + 引用图片自动附图**：同一批消息里，只有被 @ 且明确引用图片的那条会把引用图放进请求；@ 配新图、窗口期图片都只保留 `[图片 #ID]`，需要时再 `look_image`。
+- **窗口外的单图**：单发图先缓存并记编号；窗口期追问只带 L1 编号，模型需要时按 ID 取图；只有引用图 + @ 才自动附图。
 - **分辨率**：桥 `wechat.image_max_edge=0` 不缩放，单张上限 `image_max_bytes=10000000`；AstrBot `provider_settings.image_compress_options.max_size=16384`。`Dockerfile.astrbot` 在镜像构建时把 `MODEL_IMAGE_MAX_BYTES` 改为 8MB；首次/更新基础镜像后执行 `docker compose up -d --build astrbot`。
 - 想省视觉 token：把桥 `image_max_edge` 设回 `1280`；想看细节：保持 `0`，但注意每张图都会计入模型视觉 token。
 
@@ -571,6 +577,18 @@ notepad config.json
 - 防循环：同一编号重复取返回“已提供”；过期/不存在直接终止；`list_images` 每轮最多 2 次、最多 50 条；`look_image` 每轮最多 10 张（`image_look_max_per_turn` 可调）。
 
 > 磁盘：`image_cache_keep=-1` 表示不删除；图片越多占用越大，桥只记录不清理。需要腾空间时手动处理 `bridge\cache\image` 与 `bridge\cache\image_index.sqlite3`（不要只删文件而保留索引）。
+
+#### 5.9 接话 preflight 与图片请求压 L2（v0.18.0）
+
+- **@ / 明确请求**：跳过分类器，直接完整回答；只有 **@ + 引用图片** 才自动附图。
+- **@ 后 30 秒窗口内的非 @ 纯文字**：
+  1. 先用 L1 + 本批文字 + 机器人上一句做 `JOIN` / `PASS` 判定；
+  2. `PASS` → `stop_event`，不调用完整模型；
+  3. `JOIN` → 继续完整请求，并禁用完整模型的 `[PASS]`。
+- **窗口期非 @ 的图**：只保留 L1 的 `[图片 #ID]`，不自动附图；需要时由模型调用 `look_image`。这样无关表情包不会被塞进每次请求。
+- **@ 配新图（不是引用）**：也不自动附图，只给 L1 编号，由模型 `look_image` 决定是否看；只有引用图片才是明确的“看图”请求。
+- **图片请求压 L2**：只有 **@ + 引用图片** 的请求用 `image_history_max_turns=4` / `image_history_max_chars=6000`；纯文字、@ 新图、窗口消息仍 8 / 12000。`look_image` 是在同一请求内调用的，无法在工具调用时再压 L2。
+- **失败策略**：分类器超时/异常/输出无法解析时 fail-open，继续完整请求，避免装死。
 
 ### 6. 验证（按顺序做六条）
 

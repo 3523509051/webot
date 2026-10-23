@@ -33,6 +33,12 @@ class PluginConfig:
     local_routing: bool = True          # 先本地筛掉无关消息，再决定是否调用模型
     history_max_turns: int = 8          # 每次请求携带的 L2 最近轮数
     history_max_chars: int = 12000      # L2 粗略字符预算（不是精确 token）
+    # 带当前图的请求：识图通常只需要最近几轮；L2 是最大 token 项，优先压它。
+    image_history_max_turns: int = 4
+    image_history_max_chars: int = 6000
+    # 纯文字窗口消息的 L1-only 接话判定；PASS 时不发完整请求。
+    preflight_enable: bool = True
+    preflight_timeout: float = 8.0
     l1_header: str = (
         "# 群聊背景（下面是本群最近的发言，每行开头「」里的就是说话的人；"
         "仅供参考语境，不要把每行都当成需要回复的问题；"
@@ -213,7 +219,6 @@ class PluginConfig:
     image_look_max_per_turn: int = 10
     image_list_max_per_turn: int = 2
     image_list_limit: int = 20
-
     bot_names: list[str] = field(default_factory=list)
     # ↑ 机器人自己的昵称补充（自动从桥的 OneBot get_login_info 取，这里只补别名/错字）
 
