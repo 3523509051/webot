@@ -856,21 +856,40 @@ class WeChatClient:
             from wechatauto.uia_driver import rhythm
 
             if not self.gui.focus_input(box):
+                log.info("[发图] fast-paste 失败：focus_input(%s) 未命中", box)
                 return False
-            if not self.gui.copy_files_to_clipboard([path]):
+            copied = self.gui.copy_files_to_clipboard([path])
+            if not copied:
+                # 微信刚读完上一次剪贴板时，OpenClipboard 可能短暂失败，重试几次即可
+                for _ in range(3):
+                    time.sleep(0.2)
+                    if self.gui.copy_files_to_clipboard([path]):
+                        copied = True
+                        break
+            if not copied:
+                log.info("[发图] fast-paste 失败：剪贴板写入被占用（%s）", Path(path).name)
                 return False
             time.sleep(0.25)
             self.gui._input.key(VK_A, ctrl=True)
             self.gui._input.key(VK_DELETE)
             self.gui._input.key(VK_V, ctrl=True)
-            if not self.gui._input_box_has_color_draft(box, wait=2.0):
+            draft = self.gui._input_box_has_color_draft(box, wait=2.0)
+            if not draft:
+                # 有些微信版本/灰度图不会出现“彩色缩略图”，但图片草稿会把
+                # 输入框撑高，导致输入框探测失败 —— 用这个信号兜底判断。
+                try:
+                    draft = self.gui._probe_input_box() is None
+                except Exception:  # noqa: BLE001
+                    draft = False
+            if not draft:
+                log.info("[发图] fast-paste 失败：2s 内未检测到草稿（box=%s）", box)
                 return False
             rhythm.gate("send")
             self.gui._input.key(VK_RETURN)
             rhythm.nap(0.8)
             return True
         except Exception as e:  # noqa: BLE001
-            log.debug("快速粘贴图片失败: %s", e)
+            log.warning("[发图] fast-paste 异常: %s", e)
             return False
 
     def send_image(self, group_name: str, path: str,
@@ -900,6 +919,18 @@ class WeChatClient:
                         box = getattr(self.gui, "_last_input_box", None)
                     if box is None:
                         box = self.gui.get_input_box()
+                    # 缓存只用于省掉完整探测；窗口移动/布局漂移后坐标会失效，
+                    # 发图前做一次轻量探测校正，避免带着旧坐标掉进 3×6s 慢路径。
+                    try:
+                        fresh = self.gui._probe_input_box()
+                    except Exception:  # noqa: BLE001
+                        fresh = None
+                    if fresh and fresh != box:
+                        log.info(
+                            "[发图] 输入框坐标已变化，改用新坐标：cache=%s fresh=%s",
+                            box, fresh,
+                        )
+                        box = fresh
                     if box and self._paste_image_fast(box, str(p)):
                         self.gui._current_chat = group_name
                         self._last_input_box = box
