@@ -28,7 +28,8 @@ from pathlib import Path
 
 from onebot11 import OneBotClient, ActionFailed
 from send_result import SendResult
-from wechat_client import WeChatClient
+from wechat_client import (WeChatClient, cached_image, cached_image_by_time,
+                           cached_sticker)
 from safe_browser import read_website
 from browser_search import browser_search
 
@@ -69,11 +70,17 @@ DEFAULT_CONFIG = {
         "image_max_edge": 1280,  # 限制像素边长，文件字节上限并不能控制视觉 token
         # 动画表情（表情包）当图片处理：从 XML 的 cdnurl 取原文件，动图只取第一帧
         "fetch_stickers": True,
+        # 收到的图片按 md5 存一份到 bridge\cache\image\，供**以后引用旧图**时找回
+        # （表情包本来就有 md5 缓存；图片不存的话，微信清理本地副本后引用就找不到）。
+        # 0 = 关闭；默认留最近 200 张。
+        "image_cache_keep": 200,
     },
     # wechatauto_level=DEBUG 时会打出侧栏查找 / 兜底搜索 / open_chat 的细节，
     # 用于验证「已在目标群时不做切换」。零运行时开销（只是放行已有日志）。
     "logging": {"level": "INFO", "wechatauto_level": "DEBUG"},
-    "website": {"enabled": True, "restrict_domains": False, "max_ping_ms": 300, "browser_channel": "msedge", "search_engine": "bing"},
+    "website": {"enabled": True, "restrict_domains": False, "max_ping_ms": 500,
+                "allow_fake_ip": True, "allow_private_ips": False,
+                "browser_channel": "msedge", "search_engine": "bing"},
 }
 
 
@@ -175,7 +182,8 @@ MEDIA_PLACEHOLDER = {
 # ⚠️ 教训（2026-10-09 实测踩到）：之前这里直接写 cfg["wechat"][...]，
 # 结果每收到一个表情包都抛 `name 'cfg' is not defined`，整条消息被外层
 # except 丢掉 → 群里表现就是「它不认识表情包」。
-MEDIA_OPTS: dict = {"fetch_stickers": True, "image_max_edge": 1280}
+MEDIA_OPTS: dict = {"fetch_stickers": True, "image_max_edge": 1280,
+                    "image_cache_keep": 200}
 
 
 def init_media_opts(cfg: dict) -> None:
@@ -183,6 +191,7 @@ def init_media_opts(cfg: dict) -> None:
     wx_cfg = cfg.get("wechat") or {}
     MEDIA_OPTS["fetch_stickers"] = bool(wx_cfg.get("fetch_stickers", True))
     MEDIA_OPTS["image_max_edge"] = int(wx_cfg.get("image_max_edge", 1280))
+    MEDIA_OPTS["image_cache_keep"] = int(wx_cfg.get("image_cache_keep", 200))
 
 # appmsg 的 <type> → 人类可读前缀（type 49「文件/链接/卡片」内部还分很多种）
 APPMSG_LABELS = {
@@ -206,6 +215,10 @@ def _xml_tag(text: str, tag: str) -> str:
     return (m.group(1) or "").strip() if m else ""
 
 
+# 引用**表情包**时 refermsg 的 content：`wxid_xxx:<毫秒时间戳>:<序号>:<md5>::0`
+_REFER_ID_RE = re.compile(r"^[^:\s<>]{4,}:(\d{10,16}):\d+:([0-9a-fA-F]{32})::\d+$")
+
+
 def parse_appmsg(text: str) -> dict | None:
     """解析 type 49（文件/链接/卡片）里的 appmsg XML。
 
@@ -220,17 +233,28 @@ def parse_appmsg(text: str) -> dict | None:
     refer_body = _xml_tag(refer, "content") if refer else ""
     refer_md5 = None
     refer_content = ""
+    refer_time = _xml_tag(refer, "createtime") if refer else ""
     if refer_body:
         mm = re.search(r'md5="([0-9a-fA-F]{32})"', refer_body)
         if mm:
             refer_md5 = mm.group(1).lower()
-        elif not refer_body.lstrip().startswith("<"):
-            # 纯文本引用：**把被引用的原话带出来**。
-            # 为什么必须带：之前只带「（引用 X 的消息）」，模型看不到原文 ——
-            # 实测对方引用一句旧话问「这句话」，机器人只能答「我只看到『这句话』
-            # 三个字，原话没捞上来」（2026-10-08）。引用图片时这里是一段 XML，
-            # 图片另有 md5 通道，跳过。
-            refer_content = html.unescape(refer_body).strip()
+        else:
+            # 引用**表情包**时，refermsg 的 content 不是图片 XML，而是一串微信消息 ID：
+            #   wxid_xxx:1792116875436:1:fb0dbcea25affabed88336bb23f520d1::0
+            # 第 2 段是毫秒时间戳、第 4 段就是 md5。以前这串 ID 被当成正文喂给模型，
+            # 于是「引用一张表情包问这是啥」只能看到一串 ID（2026-10-16 实测）。
+            im = _REFER_ID_RE.match(refer_body.strip())
+            if im:
+                refer_md5 = im.group(2).lower()
+                ts = im.group(1)
+                refer_time = refer_time or (str(int(ts) // 1000) if len(ts) > 10 else ts)
+            elif not refer_body.lstrip().startswith("<"):
+                # 纯文本引用：**把被引用的原话带出来**。
+                # 为什么必须带：之前只带「（引用 X 的消息）」，模型看不到原文 ——
+                # 实测对方引用一句旧话问「这句话」，机器人只能答「我只看到『这句话』
+                # 三个字，原话没捞上来」（2026-10-08）。引用图片时这里是一段 XML，
+                # 图片另有 md5 通道，跳过。
+                refer_content = html.unescape(refer_body).strip()
     return {
         "kind": APPMSG_LABELS.get(_xml_tag(text, "type"), "卡片"),
         "title": _xml_tag(text, "title"),
@@ -238,7 +262,7 @@ def parse_appmsg(text: str) -> dict | None:
         "refer_author": _xml_tag(refer, "displayname") if refer else "",
         "refer_md5": refer_md5,
         "refer_content": refer_content,
-        "refer_time": _xml_tag(refer, "createtime") if refer else "",
+        "refer_time": refer_time,
     }
 
 
@@ -268,13 +292,35 @@ def card_segments(
     if info["refer_md5"]:
         lid = wx.image_local_id_by_ref(group_id, info["refer_md5"], info["refer_time"])
         img = image_segment(wx.image_path(group_id, lid), max_bytes) if lid else None
+        src = f"微信图片库(local_id={lid})"
+        if not img:
+            # ① 被引用的多半是**表情包**：表情不在图片表里，但它的静态帧早就按 md5
+            #    缓存在 cache/emoji/ 了，直接用（2026-10-16 修：引用表情包看不到图）。
+            cached = cached_sticker(info["refer_md5"])
+            if cached:
+                img = image_segment(str(cached), max_bytes)
+                src = f"表情缓存({cached.name})"
+        if not img:
+            # ② 普通图片缓存（md5 键）：收到图时按本地 packed_info 的 md5 存了一份。
+            cached = cached_image(info["refer_md5"])
+            if cached:
+                img = image_segment(str(cached), max_bytes)
+                src = f"图片缓存(md5 {cached.name})"
+        if not img:
+            # ③ 图片缓存（时间键）：引用 XML 里的 md5 是**CDN 上的原图 md5**，与本地
+            #    packed_info 的 md5 往往不同（2026-10-16 实测），但 `<createtime>`
+            #    与本地行的 create_time 严格一致 —— 它才是可靠检索键。
+            cached = cached_image_by_time(info["refer_time"])
+            if cached:
+                img = image_segment(str(cached), max_bytes)
+                src = f"图片缓存(时间 {cached.name})"
         if img:
             segs.extend(img)
             log.info(
-                "[卡片] 已附上被引用的图片（md5=%s time=%s local_id=%s）",
+                "[卡片] 已附上被引用的图片（md5=%s time=%s 来源=%s）",
                 info["refer_md5"],
                 info["refer_time"],
-                lid,
+                src,
             )
         else:
             log.info(
@@ -375,7 +421,20 @@ def build_media_segments(
     mtype = str(m.get("type") or "")
 
     if "图片" in mtype:
-        segs = image_segment(wx.image_path(group_id, m.get("local_id")), max_bytes)
+        path = wx.image_path(group_id, m.get("local_id"))
+        if path:
+            # 存一份到 cache/image/（按 md5），以后引用这张图就不再依赖微信本地库
+            try:
+                saved = wx.cache_image_for_reference(
+                    group_id, m.get("local_id"), path,
+                    MEDIA_OPTS.get("image_cache_keep", 200),
+                )
+                if saved:
+                    log.info("[图片] 已缓存供引用（local_id=%s，%d 个 md5 键）",
+                             m.get("local_id"), saved)
+            except Exception as e:  # noqa: BLE001
+                log.debug("图片缓存失败（local_id=%s）: %s", m.get("local_id"), e)
+        segs = image_segment(path, max_bytes)
         if segs:
             return segs
         return [{"type": "text", "data": {"text": "[图片（本机没有可解密的副本）]"}}]

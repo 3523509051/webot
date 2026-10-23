@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, patch
 
 from test_group_gate import Event, plugin_with_fake_astrbot
 from plugins.astrbot_plugin_group_activation.web_policy import (
-    authorized_urls, check_domain, clean_url, public_addresses)
+    authorized_urls, check_domain, clean_url, public_addresses, should_skip_ping,
+    strip_leading_verb)
 from plugins.astrbot_plugin_group_activation.amap import AMapClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bridge"))
@@ -38,6 +39,43 @@ class PolicyTests(unittest.TestCase):
         for ips in (["127.0.0.1"], ["8.8.8.8", "10.1.2.3"], ["::1"], ["169.254.169.254"], ["224.0.0.1"], []):
             with self.assertRaises(ValueError): public_addresses(ips)
         self.assertEqual(public_addresses(["8.8.8.8"]), ["8.8.8.8"])
+
+    def test_proxy_fake_ip_is_allowed_only_when_enabled(self):
+        """代理 fake-ip（198.18.0.0/15）默认仍拒绝，显式开启后放行；混入真实内网地址时依旧拒绝。"""
+        for ips in (["198.18.0.93"], ["198.19.0.1"]):
+            with self.assertRaises(ValueError): public_addresses(ips)
+            self.assertEqual(public_addresses(ips, allow_fake_ip=True), ips)
+        with self.assertRaises(ValueError):
+            public_addresses(["198.18.0.93", "10.0.0.1"], allow_fake_ip=True)
+        with self.assertRaises(ValueError):
+            public_addresses(["198.18.0.93", "127.0.0.1"], allow_fake_ip=True)
+
+    def test_private_ips_allowed_only_when_fully_open(self):
+        """allow_private_ips=True 表示完全放开（本机/内网/保留地址都读）；默认仍拒绝。"""
+        for ips in (["127.0.0.1"], ["192.168.1.5"], ["10.0.0.1"], ["::1"], ["169.254.169.254"]):
+            with self.assertRaises(ValueError): public_addresses(ips)
+            self.assertEqual(public_addresses(ips, allow_private_ips=True), ips)
+        with self.assertRaises(ValueError): public_addresses([])
+
+    def test_leading_verb_is_stripped_and_chinese_domain_is_encoded(self):
+        """`搜索xxx.com` 这类把动词并进网址的输入要先剥掉动词，中文域名再自动转码。"""
+        for raw, want in (("搜索深圳奶蛙大学.com", "深圳奶蛙大学.com"),
+                          ("搜一下 bilibili.com", "bilibili.com"),
+                          ("查一下 北京天气", "北京天气"),
+                          ("打开https://github.com/x", "https://github.com/x"),
+                          ("https://github.com/x", "https://github.com/x")):
+            self.assertEqual(strip_leading_verb(raw), want)
+        self.assertEqual(clean_url(strip_leading_verb("搜索深圳奶蛙大学.com")),
+                         "http://" + "深圳奶蛙大学.com".encode("idna").decode() + "/")
+
+    def test_ping_gate_skipped_for_fake_and_private_addresses(self):
+        """公网地址仍受延迟门槛约束；本机/内网/代理地址跳过（否则放开地址后仍会被卡死）。"""
+        self.assertFalse(should_skip_ping("8.8.8.8"))
+        self.assertFalse(should_skip_ping("198.18.0.93"))
+        self.assertTrue(should_skip_ping("198.18.0.93", allow_fake_ip=True))
+        self.assertFalse(should_skip_ping("192.168.1.5"))
+        self.assertTrue(should_skip_ping("192.168.1.5", allow_private_ips=True))
+        self.assertFalse(should_skip_ping("not-an-ip", allow_private_ips=True))
 
     def test_url_grants_are_explicit_and_quotes_do_not_grant(self):
         url = "https://github.com/test/repo"
@@ -273,7 +311,7 @@ class FetchTests(unittest.IsolatedAsyncioTestCase):
     async def test_slow_ping_does_not_fetch(self):
         calls = []
         with self.http([], calls), patch.object(safe_browser, "resolve", AsyncMock(return_value=["8.8.8.8"])), \
-             patch.object(safe_browser, "ping_ms", AsyncMock(return_value=301)):
+             patch.object(safe_browser, "ping_ms", AsyncMock(return_value=501)):
             with self.assertRaisesRegex(ValueError, "延迟"):
                 await safe_browser.fetch_document("https://github.com/", ["github.com"])
         self.assertEqual(calls, [])
@@ -286,10 +324,10 @@ class FetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["text"], "safe")
         self.assertEqual(calls, ["https://example.org/"])
 
-    async def test_exactly_300ms_is_rejected(self):
+    async def test_exactly_500ms_is_rejected(self):
         calls = []
         with self.http([], calls), patch.object(safe_browser, "resolve", AsyncMock(return_value=["8.8.8.8"])), \
-             patch.object(safe_browser, "ping_ms", AsyncMock(return_value=300)):
+             patch.object(safe_browser, "ping_ms", AsyncMock(return_value=500)):
             with self.assertRaisesRegex(ValueError, "延迟"):
                 await safe_browser.fetch_document("https://example.org/")
         self.assertEqual(calls, [])

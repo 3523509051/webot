@@ -5,7 +5,8 @@ import json
 from urllib.parse import parse_qs, urlsplit
 
 from safe_browser import ping_ms, resolve
-from plugins.astrbot_plugin_group_activation.web_policy import blocked_text, check_domain, clean_url
+from plugins.astrbot_plugin_group_activation.web_policy import (
+    blocked_text, check_domain, clean_url, should_skip_ping)
 
 ENGINES = {
     "bing": {"name": "必应网页版", "home": "https://cn.bing.com/", "domain": "bing.com",
@@ -37,11 +38,15 @@ async def checked_document(url, engine, request_headers, cache):
     url = check_domain(url, [engine["domain"]])
     host = urlsplit(url).hostname
     if host not in cache:
-        addresses = await resolve(host)
+        allow_fake_ip = bool(cache.get("allow_fake_ip", True))
+        allow_private_ips = bool(cache.get("allow_private_ips", False))
+        addresses = await resolve(host, allow_fake_ip, allow_private_ips)
         ip = next((item for item in addresses if ":" not in item), addresses[0])
-        latency = await ping_ms(ip)
-        if latency >= cache["max_ping_ms"]:
-            raise ValueError("搜索引擎 ping 延迟未低于配置上限")
+        latency = None
+        if not should_skip_ping(ip, allow_fake_ip, allow_private_ips):
+            latency = await ping_ms(ip)
+            if latency >= cache.get("max_ping_ms", 500):
+                raise ValueError("搜索引擎 ping 延迟未低于配置上限")
         cache[host] = (ip, latency)
     ip, _ = cache[host]
     class Resolver(aiohttp.abc.AbstractResolver):
@@ -106,7 +111,9 @@ async def browser_search(query, settings, top_k=6):
         return {"ok": False, "error": "搜索引擎配置仅支持 bing 或 baidu"}
     async def run():
         from playwright.async_api import async_playwright
-        cache = {"max_ping_ms": float(settings.get("max_ping_ms", 300))}
+        cache = {"max_ping_ms": float(settings.get("max_ping_ms", 500)),
+                 "allow_fake_ip": bool(settings.get("allow_fake_ip", True)),
+                 "allow_private_ips": bool(settings.get("allow_private_ips", False))}
         errors, document_count = [], [0]
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(channel=settings.get("browser_channel", "msedge"), headless=True)
@@ -156,8 +163,12 @@ async def browser_search(query, settings, top_k=6):
                         break
                 if blocked_text(json.dumps(results, ensure_ascii=False)):
                     raise ValueError("搜索结果未通过内容检查，不返回原文")
+                # cache 里除域名外还有 max_ping_ms / allow_fake_ip 两个配置键，
+                # 取值时要按「是否为 (ip, latency) 元组」过滤。
+                latencies = [pair[1] for pair in cache.values()
+                             if isinstance(pair, tuple) and pair[1] is not None]
                 return {"ok": True, "source": engine["name"], "results": results,
-                        "ping_ms": max(pair[1] for host, pair in cache.items() if host != "max_ping_ms")}
+                        "ping_ms": max(latencies) if latencies else None}
             finally:
                 await browser.close()
     try:

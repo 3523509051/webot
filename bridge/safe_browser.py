@@ -15,7 +15,7 @@ from urllib.parse import urljoin, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from plugins.astrbot_plugin_group_activation.web_policy import (
-    DEFAULT_DOMAINS, blocked_text, check_domain, public_addresses)
+    DEFAULT_DOMAINS, blocked_text, check_domain, public_addresses, should_skip_ping)
 
 
 class TextParser(HTMLParser):
@@ -69,13 +69,14 @@ async def ping_ms(ip):
     return sum(float(x) for x in values) / len(values)
 
 
-async def resolve(host):
+async def resolve(host, allow_fake_ip=False, allow_private_ips=False):
     records = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     ips = list(dict.fromkeys(record[4][0] for record in records))
-    return public_addresses(ips)
+    return public_addresses(ips, allow_fake_ip, allow_private_ips)
 
 
-async def fetch_document(url, domains=None, max_ping_ms=300, max_bytes=500000):
+async def fetch_document(url, domains=None, max_ping_ms=500, max_bytes=500000,
+                         allow_fake_ip=False, allow_private_ips=False):
     import aiohttp
     current = url
     for _ in range(4):
@@ -83,11 +84,14 @@ async def fetch_document(url, domains=None, max_ping_ms=300, max_bytes=500000):
         if blocked_text(current):
             raise ValueError("网址含不适合群聊的内容关键词，已阻止访问")
         host = urlsplit(current).hostname
-        addresses = await resolve(host)
+        addresses = await resolve(host, allow_fake_ip, allow_private_ips)
         ip = next((x for x in addresses if ":" not in x), addresses[0])
-        latency = await ping_ms(ip)
-        if latency >= max_ping_ms:
-            raise ValueError("网站 ping 延迟未低于配置上限")
+        # 内网 / 代理 fake-ip 地址跳过延迟门槛（ping 对它们没意义，内网服务常关 ICMP）
+        latency = None
+        if not should_skip_ping(ip, allow_fake_ip, allow_private_ips):
+            latency = await ping_ms(ip)
+            if latency >= max_ping_ms:
+                raise ValueError("网站 ping 延迟未低于配置上限")
         # Pin the validated address, preserving host/SNI/TLS certificate checks.
         class PinnedResolver(aiohttp.abc.AbstractResolver):
             async def resolve(self, requested_host, port=443, family=0):
@@ -135,7 +139,8 @@ async def fetch_document(url, domains=None, max_ping_ms=300, max_bytes=500000):
                     raise ValueError("网页含不适合群聊的内容，已阻止返回")
                 if not text:
                     raise ValueError("网页没有可读取文字，可能需要 JavaScript、登录或验证")
-                return {"url": current, "ping_ms": round(latency, 1), "text": text}
+                return {"url": current, "text": text,
+                        "ping_ms": round(latency, 1) if latency is not None else None}
     raise ValueError("网站重定向次数过多")
 
 
@@ -145,7 +150,9 @@ async def read_website(url, settings):
     async def read():
         domains = settings.get("allowed_domains", DEFAULT_DOMAINS) if settings.get("restrict_domains", False) else None
         result = await fetch_document(url, domains,
-                                      float(settings.get("max_ping_ms", 300)))
+                                      float(settings.get("max_ping_ms", 500)),
+                                      allow_fake_ip=bool(settings.get("allow_fake_ip", True)),
+                                      allow_private_ips=bool(settings.get("allow_private_ips", False)))
         # Browser does not perform any website network request or execute scripts.
         from playwright.async_api import async_playwright
         async with async_playwright() as playwright:
