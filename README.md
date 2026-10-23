@@ -57,7 +57,7 @@
 
 ### 新功能与升级
 
-当前版本 **v0.20.0**：新增本地文件库，接收 md/c/cpp 等文本代码文件，AI 用 `list_files` / `read_file` 按需读取；`.bat` / `.exe` / 压缩包直接拒收。微信链接卡片上报完整 URL，公众号文章可读；引用链接不再截断。表情库、文字+表情标记、窗口 preflight 等沿用 v0.19.0。
+当前版本 **v0.20.1**：新增本地文件库，接收 md/c/cpp 等文本代码文件，AI 用 `list_files` / `read_file` 按需读取；`.bat` / `.exe` / 压缩包直接拒收。微信链接卡片上报完整 URL，公众号文章可读；引用链接不再截断；表情检索支持情绪同义词。表情库、文字+表情标记、窗口 preflight 等沿用 v0.19.0。
 
 已有服务器请按 [新功能升级指南](docs/upgrade-v0.20.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
@@ -356,7 +356,7 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 ```
 
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
-`[group_activation] 已加载 v0.20.0 …`
+`[group_activation] 已加载 v0.20.1 …`
 
 #### 4.1 插件参数（可选，按需改）
 
@@ -606,7 +606,7 @@ D:\webot\stickers\
   files\st_0001_无语_无语扶额.gif
 ```
 
-- `list_stickers(query?, emotion?, scene?, limit?)`：按情绪/场景/关键词检索；
+- `list_stickers(query?, emotion?, scene?, limit?)`：按情绪/场景/关键词检索；情绪支持同义词（开心/高兴/愉悦/快乐等），不要求与库里标签完全一致；
 - 仓库自带 `stickers/default/` 的 **24 张默认表情**；新设备/空运行时库首次启动自动播种到 `stickers/files + index.json`，已有本地库不覆盖；
 - **文字 + 表情（推荐）**：模型在最终回复末尾写 `[[表情:无语]]` 或 `[[表情:st_0006]]`；插件解析标记，调用桥的 `text_sticker` 在一个动作里先发文字再发图，只消耗**一次模型 API**，且顺序固定文字→图片；
 - 标记必须放在**完整正文**末尾；不能只写 @ 或只写标记，否则插件/桥会自动补一句兜底正文，避免空 @；

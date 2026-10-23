@@ -20,6 +20,33 @@ from pathlib import Path
 
 _BAD = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
+# 群友/模型常用的近义情绪；只用于检索，不改写库里的标签
+_EMOTION_SYNONYMS = {
+    "开心": ("愉悦", "高兴", "快乐", "笑", "治愈", "可爱"),
+    "高兴": ("开心", "愉悦", "快乐", "笑"),
+    "快乐": ("开心", "愉悦", "高兴", "笑"),
+    "生气": ("气鼓鼓", "愤怒", "凶", "不爽"),
+    "愤怒": ("生气", "气鼓鼓", "凶"),
+    "无语": ("嫌弃", "无奈", "冷漠", "呆滞", "超然"),
+    "无奈": ("无语", "嫌弃", "冷漠"),
+    "震惊": ("惊讶", "呆住", "超然", "呆滞"),
+    "搞笑": ("沙雕", "魔性", "搞笑", "笑"),
+    "喜欢": ("爱心", "贴贴", "可爱", "治愈"),
+    "庆祝": ("开心", "愉悦", "高兴", "获奖"),
+}
+
+
+def _search_terms(value: str) -> set[str]:
+    value = str(value or "").strip().lower()
+    if not value:
+        return set()
+    terms = {value}
+    for key, vals in _EMOTION_SYNONYMS.items():
+        if key in value or value in key:
+            terms.add(key)
+            terms.update(vals)
+    return terms
+
 
 class StickerLibrary:
     def __init__(self, root: str | Path, default_root: str | Path | None = None) -> None:
@@ -193,6 +220,9 @@ class StickerLibrary:
         q = str(query or "").strip().lower()
         emo = str(emotion or "").strip().lower()
         sc = str(scene or "").strip().lower()
+        q_terms = _search_terms(q)
+        emo_terms = _search_terms(emo)
+        sc_terms = _search_terms(sc)
         try:
             limit = max(1, min(int(limit or 12), 30))
         except (TypeError, ValueError):
@@ -208,11 +238,11 @@ class StickerLibrary:
                 " ".join(item.get("scenes") or []),
                 " ".join(item.get("tags") or []),
             ]).lower()
-            if q and q not in hay:
+            if q_terms and not any(t in hay for t in q_terms):
                 continue
-            if emo and emo not in str(item.get("emotion") or "").lower():
+            if emo_terms and not any(t in hay for t in emo_terms):
                 continue
-            if sc and sc not in " ".join(item.get("scenes") or []).lower():
+            if sc_terms and not any(t in hay for t in sc_terms):
                 continue
             out.append({
                 "id": sid,

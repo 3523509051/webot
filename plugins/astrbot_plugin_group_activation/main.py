@@ -58,7 +58,7 @@ from .web_policy import (authorized_urls, blocked_text, clean_url,
                          revokes_website, strip_leading_verb)
 from .window import WindowManager
 
-VERSION = "0.20.0"
+VERSION = "0.20.1"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
