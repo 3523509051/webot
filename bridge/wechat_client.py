@@ -37,12 +37,141 @@ GROUP_SUFFIX = "@chatroom"
 
 # 动画表情转出来的静态帧缓存目录（同一个表情只下一次、只转一次）
 _EMOJI_CACHE_DIR = Path(__file__).with_name("cache") / "emoji"
+
+# 图片缓存目录：收到图时按 md5 存一份，供**以后引用旧图**时找回。
+# 为什么需要：图片和表情包不一样 —— 表情包有 md5 缓存可以直接命中，图片只能回微信
+# 本地库现解密（`image_local_id_by_ref` 只扫最近 300 行，微信清理后/超出窗口就找不回），
+# 于是「引用几天前的一张图」会失败（2026-10-16 实测）。
+_IMAGE_CACHE_DIR = Path(__file__).with_name("cache") / "image"
 _EMOJI_MAX_PX = 1024          # 长边上限：控 token，也控 base64 后的 WS 帧大小
 _EMOJI_MAX_BYTES = 12_000_000  # 下载上限（实测最大的表情 GIF 2.4MB）
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
 )
+
+
+def md5s_in_packed_info(blob) -> list[str]:
+    """从图片消息行的 packed_info 里取出所有 32 位十六进制串（图片 md5）。
+
+    为什么要取「所有」：packed_info 是打包过的二进制，里面可能同时有原图与缩略图的
+    md5，而引用回复里带的可能是其中任意一个 —— 每个都存一份最稳（引用路径就是拿
+    refer md5 去 packed_info 里比对，见 `image_local_id_by_ref`）。
+    """
+    if not blob:
+        return []
+    data = blob.encode("utf-8", "ignore") if isinstance(blob, str) else bytes(blob)
+    out: list[str] = []
+    for m in re.findall(rb"[0-9a-fA-F]{32}", data):
+        s = m.decode("ascii", "ignore").lower()
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def cached_image(md5: str) -> Path | None:
+    """按 md5 取本地缓存的图片副本（收到图时存的那份）。"""
+    if not md5:
+        return None
+    return _cached_image_file(f"{str(md5).lower()}")
+
+
+def cached_image_by_time(create_time, tolerance: int = 3) -> Path | None:
+    """按「被引用图片的 createtime」取缓存副本（±tolerance 秒容差）。
+
+    为什么必须按时间找：引用 XML 带的 md5 是**原始大图在 CDN 上的 md5**，与本地
+    packed_info 里那份并不相同（2026-10-16 实测：refer=bffee8b9… / 本地=7705a4d1…），
+    而 `<createtime>` 与本地行的 create_time 是严格一致的 —— 这条才是可靠的键。
+    容差与 `image_local_id_by_ref` 保持一致（引用值偶尔差 1 秒）。
+    """
+    try:
+        want = int(create_time)
+    except (TypeError, ValueError):
+        return None
+    for delta in range(0, max(0, int(tolerance)) + 1):
+        for t in ({want} if delta == 0 else {want - delta, want + delta}):
+            hit = _cached_image_file(f"t{t}")
+            if hit:
+                return hit
+    return None
+
+
+def _cached_image_file(key: str) -> Path | None:
+    try:
+        path = _IMAGE_CACHE_DIR / f"{key}.jpg"
+        return path if path.is_file() and path.stat().st_size > 0 else None
+    except OSError:
+        return None
+
+
+def prune_image_cache(keep: int = 200) -> None:
+    """图片缓存按修改时间只留最近 keep 个（图片比表情大，默认留少一些）。"""
+    if keep <= 0:
+        return
+    try:
+        files = sorted(_IMAGE_CACHE_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime,
+                       reverse=True)
+    except OSError:
+        return
+    for p in files[keep:]:
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def save_image_cache(path: str, md5s: list[str], create_time=None, keep: int = 200) -> int:
+    """把解密好的图片存进 cache/image/，返回新写入的份数。
+
+    同时写两份键：`<md5>.jpg`（本地 packed_info 的 md5，偶尔会被引用 XML 直接用上）
+    与 `t<create_time>.jpg`（引用 XML 的 createtime 与本地 create_time 一致，是主要检索键）。
+    """
+    import shutil
+
+    keys = [str(m).lower() for m in (md5s or []) if m]
+    try:
+        if create_time:
+            keys.append(f"t{int(create_time)}")
+    except (TypeError, ValueError):
+        pass
+    if not path or not keys or keep <= 0:
+        return 0
+    try:
+        src = Path(path)
+        if not src.is_file() or src.stat().st_size <= 0:
+            return 0
+        _IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        saved = 0
+        for key in keys:
+            dst = _IMAGE_CACHE_DIR / f"{key}.jpg"
+            try:
+                if dst.exists() and dst.stat().st_size > 0:
+                    continue
+                shutil.copyfile(src, dst)
+                saved += 1
+            except OSError as e:
+                log.debug("写入图片缓存失败（key=%s）: %s", key, e)
+        prune_image_cache(keep)
+        return saved
+    except OSError as e:
+        log.debug("图片缓存处理失败: %s", e)
+        return 0
+
+
+def cached_sticker(md5: str) -> Path | None:
+    """按 md5 取本地已缓存的表情包静态帧。
+
+    用途：**引用一张表情包**时，被引用内容的 md5 就在引用 ID 里，而这张表情
+    之前已经下载并转成 jpg 缓存在 cache/emoji/<md5>.jpg —— 直接拿来用，
+    不必再回微信数据库找 local_id（表情包在图片表里往往查不到，2026-10-16 实测）。
+    """
+    if not md5:
+        return None
+    try:
+        path = _EMOJI_CACHE_DIR / f"{str(md5).lower()}.jpg"
+        return path if path.is_file() and path.stat().st_size > 0 else None
+    except OSError:
+        return None
 
 
 def _zstd_text(blob) -> str:
@@ -491,6 +620,26 @@ class WeChatClient:
                 if best:
                     return best[1]
         return None
+
+    def cache_image_for_reference(self, group_id: str, local_id, path: str,
+                                  keep: int = 200) -> int:
+        """收到图片时就按 md5 存一份到 cache/image/（供以后引用时找回）。
+
+        只在这里付一次磁盘拷贝的代价，引用旧图就不再依赖微信本地库是否还在
+        （微信清理 / 超出 `image_local_id_by_ref` 的 300 行窗口都会让引用失败）。
+        """
+        try:
+            # local_type=3 = 图片；跨分片下 local_id 非全局唯一，带上类型更准
+            row = self.db.get_message_row(group_id, local_id, local_type=3)
+        except TypeError:
+            row = self.db.get_message_row(group_id, local_id)
+        except Exception as e:  # noqa: BLE001
+            log.debug("取图片消息行失败（local_id=%s）: %s", local_id, e)
+            return 0
+        if not row:
+            return 0
+        md5s = md5s_in_packed_info(row.get("packed_info"))
+        return save_image_cache(path, md5s, row.get("create_time"), keep)
 
     # ── 成员名单（出站 @ 用）───────────────────────────
     def member_names(self, group_id: str, ttl: float = 600.0) -> set[str]:

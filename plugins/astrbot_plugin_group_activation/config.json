@@ -34,6 +34,8 @@
   "task_buffer_max_chars": 12000,
   "kb_query_max_chars": 1000,
   "kb_retrieval_timeout": 5.0,
+  "search_enable": true,
+  "search_daily_limit": 50,
   "amap_enable": true,
   "amap_daily_limit": 100,
   "website_enable": true,

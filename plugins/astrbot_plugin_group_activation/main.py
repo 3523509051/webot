@@ -53,7 +53,8 @@ from .routing import (compact_contexts, should_consider_followup, wants_image,
                       search_intent, kb_query, is_weather_request)
 from .search_quota import SearchQuota
 from .amap import AMapClient
-from .web_policy import authorized_urls, blocked_text, clean_url, revokes_website
+from .web_policy import (authorized_urls, blocked_text, clean_url,
+                         revokes_website, strip_leading_verb)
 from .window import WindowManager
 
 VERSION = "0.15.1"
@@ -998,6 +999,40 @@ class GroupActivationPlugin(star.Star):
             return
         if not self._event_is_current(event):
             raise asyncio.CancelledError()
+        # ==== TEMP DIAG（2026-10-16 图片链路排查，确认根因后删除）====
+        def _img_stats(contexts):
+            idx, refs = [], []
+            for i, m in enumerate(contexts or []):
+                ct = m.get("content") if isinstance(m, dict) else None
+                if isinstance(ct, list):
+                    for p in ct:
+                        if isinstance(p, dict) and str(p.get("type")) == "image_url":
+                            idx.append(i)
+                            refs.append(str(p.get("image_url"))[:24])
+            return idx, refs
+
+        try:
+            _before_idx, _before_refs = _img_stats(req.contexts)
+            _extra_imgs = [
+                (p.get("type") if isinstance(p, dict) else type(p).__name__)
+                for p in (req.extra_user_content_parts or [])[:6]
+            ]
+            logger.warning(
+                "[GA-DIAG] str=%r | prompt=%r | image_urls=%d %s | ctx=%d 图@%s %s | extra=%d %s",
+                (event.message_str or "")[:60],
+                (req.prompt or "")[:40],
+                len(req.image_urls or []),
+                [str(r)[:28] for r in (req.image_urls or [])][:3],
+                len(req.contexts or []),
+                _before_idx,
+                _before_refs[:3],
+                len(req.extra_user_content_parts or []),
+                _extra_imgs,
+            )
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("[GA-DIAG] 诊断失败: %s", _e)
+        # ==== TEMP DIAG END ====
+
         # L2 历史里的图片不再重发（见 _strip_history_images 的说明）。
         # 放在窗口判定之前：只要这次 LLM 请求真的发生，这一步就该生效。
         if self.cfg.strip_history_images:
@@ -1159,7 +1194,12 @@ class GroupActivationPlugin(star.Star):
             event.get_extra("ga_mentioned", False)
             and not re.sub(r"\[At:\d+\]", "", event.message_str or "").strip()
         )
-        if not batch and not self._image_refs(event) and (wants_image(event.message_str or "") or bare_at):
+        # 2026-10-16 修：原条件要求「没有批次」才补挂 —— 但 @ 进来的消息必然带批次，
+        # 于是「先发表情包、再 @ 问『这是什么』」永远补不上图。现在只看
+        # 「本次请求有没有图」：没有 + 这条在问图 → 才补挂。
+        if not list(getattr(req, "image_urls", None) or []) and (
+            wants_image(event.message_str or "") or bare_at
+        ):
             img_key = f"{gid}:{event.get_sender_id() or ''}"
             refs, its = self._last_image.get(img_key, ([], 0.0))
             if refs and time.time() - its <= self.cfg.image_carry_seconds:
@@ -1754,17 +1794,19 @@ class GroupActivationPlugin(star.Star):
 
     @filter.llm_tool(name="read_website")
     async def read_website(self, event: AstrMessageEvent, url: str, requester_id: str = "") -> str:
-        '''用宿主机独立浏览器读取文字。正常对话中始终可用，可读用户网址、搜索结果或找到的官网，无批次名单或特定动词限制。
-        必须 ping 成功且平均延迟严格小于300ms，并通过内容审核；不登录、不下载、不读媒体。
+        '''用宿主机独立浏览器读取文字。正常对话中始终可用，可读用户网址、搜索结果或找到的官网，无批次名单、域名白名单限制。
+        公网地址需 ping 成功且平均延迟严格小于500ms（本机/内网/代理地址跳过该门槛），并通过内容审核；不登录、不下载、不读媒体。
 
         Args:
-            url(string): 要读取的HTTP/HTTPS网址或裸域名，支持中文域名
+            url(string): 要读取的HTTP/HTTPS网址或裸域名，支持中文域名。
+                中文域名**原样传**（如 `深圳奶蛙大学.com`），工具会自动转码；
+                不要自己转成 `xn--` 形式，也不要把「搜索/打开」等动词并进域名里。
             requester_id(string): 可省略的兼容参数，不用于批次权限校验
         '''
         if not self.cfg.website_enable or not self._event_is_current(event):
             return "网站访问已关闭或请求已取消。"
         try:
-            url = clean_url(url)
+            url = clean_url(strip_leading_verb(url))
         except ValueError as exc:
             return str(exc)
         permission_key = f"{event.get_group_id()}:{event.get_sender_id() or ''}"
