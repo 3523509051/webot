@@ -67,14 +67,14 @@ DEFAULT_CONFIG = {
         # 为什么用 base64 而不是 file:// —— AstrBot 跑在容器里，读不到宿主机路径。
         # 超过 image_max_bytes 的图片退化成 [图片] 占位文本，避免 WS 大帧传输失败。
         "send_images": True,
-        "image_max_bytes": 3000000,
-        "image_max_edge": 1280,  # 限制像素边长，文件字节上限并不能控制视觉 token
+        "image_max_bytes": 10_000_000,
+        "image_max_edge": 0,  # 0 = 不缩分辨率；长边像素上限（非字节）
         # 动画表情（表情包）当图片处理：从 XML 的 cdnurl 取原文件，动图只取第一帧
         "fetch_stickers": True,
         # 收到的图片按 md5 存一份到 bridge\cache\image\，供**以后引用旧图**时找回
         # （表情包本来就有 md5 缓存；图片不存的话，微信清理本地副本后引用就找不到）。
-        # 0 = 关闭；默认留最近 200 张。
-        "image_cache_keep": 200,
+        # 0 = 关闭；-1 = 保留所有（索引/文件都不自动裁剪）
+        "image_cache_keep": -1,
         # 先发图、再问「这是什么」时，把上一条图补挂到追问上的有效期（秒）。
         # 0 = 关闭。AstrBot 侧对纯图片事件不一定触发插件缓存，桥这里兜底。
         "image_carry_seconds": 30.0,
@@ -247,16 +247,16 @@ MEDIA_PLACEHOLDER = {
 # ⚠️ 教训（2026-10-09 实测踩到）：之前这里直接写 cfg["wechat"][...]，
 # 结果每收到一个表情包都抛 `name 'cfg' is not defined`，整条消息被外层
 # except 丢掉 → 群里表现就是「它不认识表情包」。
-MEDIA_OPTS: dict = {"fetch_stickers": True, "image_max_edge": 1280,
-                    "image_cache_keep": 200}
+MEDIA_OPTS: dict = {"fetch_stickers": True, "image_max_edge": 0,
+                    "image_cache_keep": -1}
 
 
 def init_media_opts(cfg: dict) -> None:
     """把 main() 读到的配置同步给模块级媒体开关。"""
     wx_cfg = cfg.get("wechat") or {}
     MEDIA_OPTS["fetch_stickers"] = bool(wx_cfg.get("fetch_stickers", True))
-    MEDIA_OPTS["image_max_edge"] = int(wx_cfg.get("image_max_edge", 1280))
-    MEDIA_OPTS["image_cache_keep"] = int(wx_cfg.get("image_cache_keep", 200))
+    MEDIA_OPTS["image_max_edge"] = int(wx_cfg.get("image_max_edge", 0))
+    MEDIA_OPTS["image_cache_keep"] = int(wx_cfg.get("image_cache_keep", -1))
 
 # appmsg 的 <type> → 人类可读前缀（type 49「文件/链接/卡片」内部还分很多种）
 APPMSG_LABELS = {
@@ -331,6 +331,53 @@ def parse_appmsg(text: str) -> dict | None:
     }
 
 
+def parse_record_items(raw: str) -> list[dict]:
+    """解析「合并转发的聊天记录」里的 recorditem。
+
+    微信把转发记录放在 `<recorditem><![CDATA[...]]></recorditem>`，里面的
+    文字在 `<datadesc>`，图片只给 CDN 加密引用（cdnthumburl/cdnthumbkey），
+    桥没有 CDN 下载协议。这里至少把文字条目和图片数量读出来，避免模型把
+    `[图片]` 当成已经看过的内容。
+    """
+    if not raw or "<recorditem" not in raw:
+        return []
+    match = re.search(
+        r"<recorditem><!\[CDATA\[(.*?)\]\]></recorditem>", raw, re.S
+    )
+    if not match:
+        # 非 CDATA 的少数版本
+        match = re.search(r"<recorditem>(.*?)</recorditem>", raw, re.S)
+    if not match:
+        return []
+    record = match.group(1)
+    items: list[dict] = []
+    for block in re.findall(r"<dataitem\b.*?</dataitem>", record, re.S):
+        def tag(name: str) -> str:
+            m = re.search(rf"<{name}[^>]*>(.*?)</{name}>", block, re.S)
+            return html.unescape(m.group(1)).strip() if m else ""
+
+        datatype = tag("datatype")
+        if not datatype:
+            dbtype = re.search(r'<dataitem\b[^>]*datatype="([^"]+)"', block)
+            datatype = dbtype.group(1) if dbtype else ""
+        desc = tag("datadesc")
+        sender = tag("sourcename") or "?"
+        if not desc:
+            desc = {
+                "2": "[图片]",
+                "3": "[语音]",
+                "4": "[视频]",
+                "5": "[文件]",
+            }.get(datatype, f"[{datatype or '内容'}]")
+        items.append({
+            "datatype": datatype,
+            "sender": sender,
+            "desc": desc,
+            "src_time": tag("srcMsgCreateTime") or tag("sourcetime"),
+        })
+    return items
+
+
 def card_segments(
     raw: str,
     group_id: str,
@@ -354,6 +401,7 @@ def card_segments(
     # 被引用的图片：按 md5 / 时间戳找回 local_id 再解密。
     # 注意只在 refer_md5 存在时查 —— 引用**文本**时也带 createtime，之前拿它去
     # 查图必然落空，白付一次查库 + 打一行误导性的「图片拿不到」日志。
+    missing_image = False
     if info["refer_md5"]:
         lid = wx.image_local_id_by_ref(group_id, info["refer_md5"], info["refer_time"])
         img = image_segment(wx.image_path(group_id, lid), max_bytes) if lid else None
@@ -367,7 +415,7 @@ def card_segments(
                 src = f"表情缓存({cached.name})"
         if not img:
             # ② 普通图片缓存（md5 键）：收到图时按本地 packed_info 的 md5 存了一份。
-            cached = cached_image(info["refer_md5"])
+            cached = cached_image(info["refer_md5"], group_id)
             if cached:
                 img = image_segment(str(cached), max_bytes)
                 src = f"图片缓存(md5 {cached.name})"
@@ -375,7 +423,7 @@ def card_segments(
             # ③ 图片缓存（时间键）：引用 XML 里的 md5 是**CDN 上的原图 md5**，与本地
             #    packed_info 的 md5 往往不同（2026-10-16 实测），但 `<createtime>`
             #    与本地行的 create_time 严格一致 —— 它才是可靠检索键。
-            cached = cached_image_by_time(info["refer_time"])
+            cached = cached_image_by_time(info["refer_time"], group_wxid=group_id)
             if cached:
                 img = image_segment(str(cached), max_bytes)
                 src = f"图片缓存(时间 {cached.name})"
@@ -388,6 +436,7 @@ def card_segments(
                 src,
             )
         else:
+            missing_image = True
             log.info(
                 "[卡片] 被引用的图片拿不到本地副本（md5=%s time=%s）",
                 info["refer_md5"],
@@ -399,7 +448,14 @@ def card_segments(
         if info["refer_author"]:
             what = "图片" if info["refer_md5"] else "消息"
             quoted = (info.get("refer_content") or "").replace("\n", " ").strip()
-            if quoted:
+            if missing_image:
+                # 不要把「找不到」留白让模型自己猜：它会拿最近一张图顶上，
+                # 实测会把别的图说成被引用的图（2026-10-23）。
+                title = (
+                    f"（引用 {info['refer_author']} 的图片，"
+                    f"但本机没有找到原图，无法查看；不要猜测内容）{title}"
+                )
+            elif quoted:
                 title = (
                     f"（引用 {info['refer_author']} 的{what}："
                     f"「{quoted[:100]}」）{title}"
@@ -416,6 +472,27 @@ def card_segments(
         # 走文本通道 → @ 会被识别成 at 段，窗口也才开得起来
         segs.extend(build_segments(title, nicknames, self_id))
     else:
+        if info["kind"] == "聊天记录":
+            items = parse_record_items(raw)
+            if items:
+                lines = [
+                    f"{it['sender']}: {it['desc'][:160]}"
+                    for it in items[:10]
+                ]
+                images = sum(
+                    1 for it in items
+                    if it["datatype"] == "2" or it["desc"].startswith("[图片]")
+                )
+                label = f"[聊天记录] {info['title'] or '聊天记录'}"
+                if lines:
+                    label += " — " + " / ".join(lines)
+                label += (
+                    f"（转发记录共{len(items)}条"
+                    + (f"，含{images}张图片" if images else "")
+                    + "；转发记录内的图片内容无法直接读取，不要猜测）"
+                )
+                segs.append({"type": "text", "data": {"text": label}})
+                return segs
         label = f"[{info['kind']}] {title}".strip()
         if info["des"]:
             label += f" — {info['des'][:120]}"
@@ -436,7 +513,7 @@ def image_segment(path: str | None, max_bytes: int) -> list[dict] | None:
     try:
         with open(path, "rb") as f:
             payload = f.read()
-        max_edge = int(MEDIA_OPTS.get("image_max_edge", 1280))
+        max_edge = int(MEDIA_OPTS.get("image_max_edge", 0))
         if max_edge > 0:
             from PIL import Image, ImageOps
 
@@ -487,30 +564,52 @@ def build_media_segments(
 
     if "图片" in mtype:
         path = wx.image_path(group_id, m.get("local_id"))
+        seq = None
         if path:
-            # 存一份到 cache/image/（按 md5），以后引用这张图就不再依赖微信本地库
+            # 存进索引：每群独立编号、保留所有，供引用旧图和 AI 按编号查看
             try:
-                saved = wx.cache_image_for_reference(
+                ref = wx.cache_image_for_reference(
                     group_id, m.get("local_id"), path,
-                    MEDIA_OPTS.get("image_cache_keep", 200),
+                    MEDIA_OPTS.get("image_cache_keep", -1),
+                    sender=m.get("sender_name", ""),
+                    context="",
                 )
-                if saved:
-                    log.info("[图片] 已缓存供引用（local_id=%s，%d 个 md5 键）",
-                             m.get("local_id"), saved)
+                if ref:
+                    seq = ref.get("seq")
+                    log.info("[图片] 已缓存 #%s（local_id=%s）", seq, m.get("local_id"))
             except Exception as e:  # noqa: BLE001
                 log.debug("图片缓存失败（local_id=%s）: %s", m.get("local_id"), e)
         segs = image_segment(path, max_bytes)
         if segs:
+            if seq:
+                return [{"type": "text", "data": {"text": f"[图片 #{seq}]"}}] + segs
             return segs
         return [{"type": "text", "data": {"text": "[图片（本机没有可解密的副本）]"}}]
 
     if "表情" in mtype:
         if MEDIA_OPTS.get("fetch_stickers", True):
             try:
-                segs = image_segment(
-                    wx.sticker_frame(group_id, m.get("local_id")), max_bytes
-                )
+                frame = wx.sticker_frame(group_id, m.get("local_id"))
+                segs = image_segment(frame, max_bytes)
                 if segs:
+                    seq = None
+                    if frame and int(MEDIA_OPTS.get("image_cache_keep", -1)) != 0:
+                        raw = m.get("raw") or {}
+                        content = str(raw.get("content") or m.get("text") or "")
+                        md5s = re.findall(r'md5="([0-9a-fA-F]{32})"', content)
+                        ref = wx.cache_file_for_reference(
+                            group_id,
+                            frame,
+                            sender=m.get("sender_name", ""),
+                            context="",
+                            create_time=m.get("create_time"),
+                            md5s=md5s,
+                            local_id=m.get("local_id"),
+                        )
+                        if ref:
+                            seq = ref.get("seq")
+                    if seq:
+                        return [{"type": "text", "data": {"text": f"[图片 #{seq}]"}}] + segs
                     return segs
             except Exception as e:  # noqa: BLE001
                 # 反过来兜底：取图这条路炸了也只退化为占位，
@@ -719,6 +818,53 @@ async def main() -> int:
                 {"user_id": _fake_id(n), "nickname": n, "card": ""}
                 for n in sorted(wx.member_names(wxid))
             ]
+        if action in ("get_cached_image", "list_cached_images"):
+            gid = params.get("group_id")
+            wxid = _wxid_of(gid)
+            if not wxid:
+                return {"ok": False, "error": "group_not_found"}
+            if action == "get_cached_image":
+                try:
+                    seq = int(params.get("image_id") or 0)
+                except (TypeError, ValueError):
+                    return {"ok": False, "error": "bad_image_id"}
+                item = wx.get_cached_image(wxid, seq)
+                if not item:
+                    return {"ok": False, "error": "not_found"}
+                try:
+                    payload = Path(item["file"]).read_bytes()
+                except OSError as e:
+                    return {"ok": False, "error": f"read_failed: {e}"}
+                return {
+                    "ok": True,
+                    "id": seq,
+                    "sender": item.get("sender") or "",
+                    "create_time": int(item.get("create_time") or 0),
+                    "context": str(item.get("context") or "")[:200],
+                    "mime": "image/jpeg",
+                    "data": base64.b64encode(payload).decode("ascii"),
+                }
+            try:
+                limit = int(params.get("limit") or 20)
+            except (TypeError, ValueError):
+                limit = 20
+            result = wx.list_cached_images(
+                wxid,
+                sender=str(params.get("sender") or ""),
+                since=params.get("since"),
+                limit=limit,
+            )
+            items = []
+            for item in result.get("items") or []:
+                ts = int(item.get("create_time") or 0)
+                items.append({
+                    "id": item.get("seq"),
+                    "sender": item.get("sender") or "",
+                    "create_time": ts,
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "",
+                    "context": str(item.get("context") or "")[:120],
+                })
+            return {"ok": True, "items": items, "has_more": bool(result.get("has_more"))}
         if action == "can_send_image":
             return {"yes": True}
         if action == "can_send_record":
@@ -879,7 +1025,7 @@ async def main() -> int:
     # ── 轮询上报 ──────────────────────────────────────
     interval = float(cfg["wechat"].get("poll_interval", 1.5))
     send_images = bool(cfg["wechat"].get("send_images", True))
-    image_max_bytes = int(cfg["wechat"].get("image_max_bytes", 3_000_000))
+    image_max_bytes = int(cfg["wechat"].get("image_max_bytes", 10_000_000))
     # 先发图、再问图：按「群 + 发送者」记住最近一张图的消息段（含 base64）。
     image_carry_seconds = float(cfg["wechat"].get("image_carry_seconds", 30.0) or 0)
     last_images: dict[tuple[str, str], tuple[float, list[dict]]] = {}
@@ -920,7 +1066,10 @@ async def main() -> int:
                         log.debug("[跳过] %s 类型=%s", g["name"], mtype)
                         continue
 
-                    is_img = segments[0].get("type") == "image"
+                    img_seg = next(
+                        (s for s in segments if s.get("type") == "image"), None
+                    )
+                    is_img = img_seg is not None
                     if is_img and not m.get("is_self"):
                         # 纯图片事件在 AstrBot 侧不一定能进插件缓存，桥这里先留一份，
                         # 等同一人 30 秒内发「这是什么」时直接并进那条追问。
@@ -947,8 +1096,8 @@ async def main() -> int:
                         g["name"],
                         m["sender_name"],
                         (
-                            f"<image base64 {len(segments[0]['data']['file'])} 字节>"
-                            if is_img
+                            f"<image base64 {len(img_seg['data']['file'])} 字节>"
+                            if img_seg
                             else json.dumps(segments, ensure_ascii=False)
                         ),
                     )

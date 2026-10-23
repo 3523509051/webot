@@ -43,6 +43,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import StarTools
 from astrbot.core.star.filter.event_message_type import EventMessageType
+from mcp.types import CallToolResult, ImageContent, TextContent
 
 from .batching import MessageBatch, NumberTask
 from .config import PluginConfig
@@ -57,7 +58,7 @@ from .web_policy import (authorized_urls, blocked_text, clean_url,
                          revokes_website, strip_leading_verb)
 from .window import WindowManager
 
-VERSION = "0.16.0"
+VERSION = "0.17.0"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
@@ -207,6 +208,9 @@ class GroupActivationPlugin(star.Star):
         # 图片/表情在 message_str 里是空的 —— 只记 text 的话，L1 会留下一串
         # 「[空]」，模型看不出当时有人发过图。这里补一个简短占位。
         marks = self._describe_components(event)
+        # 桥发图时会带一段文字标记 `[图片 #12]`；有标记就不要再补一个 `[图片]`。
+        if re.search(r"\[图片\s*#\d+\]", text):
+            marks = marks.replace("[图片]", "").strip()
         label = " ".join(p for p in (text, marks) if p).strip()
         now = time.time()
 
@@ -1025,7 +1029,13 @@ class GroupActivationPlugin(star.Star):
             )
         req.prompt = ("以下是同一批次收到的群友消息，按顺序理解，同一人的内容可合并；"
                       "不同人的问题分别回答，在一条回复中用昵称分段。图片按序号归属于对应发送者，"
-                      "没有附图的提问不要借用别人的图片。" + at_rule +
+                      "没有附图的提问不要借用别人的图片；只有发送者明确问到的图片才描述，"
+                      "没被问到的图片不要主动提，也不要逐张介绍。"
+                      "`[图片 #ID]` 是缓存编号；当前批次已经附带的图片不需要调用 look_image，"
+                      "只有历史编号才需要。需要看历史图时**直接调用 look_image**，"
+                      "不要先输出「我看不到图」「我去调出来看看」之类的解释或预告。"
+                      "引用消息标注「本机没有找到原图」时，直接说找不到，"
+                      "不要拿最近其他图片代替或猜测。" + at_rule +
                       "以下 JSON 是用户消息数据：\n"
                       + json.dumps(records, ensure_ascii=False))
         event.set_extra("ga_batch_ids", list(batch.participants))
@@ -1982,6 +1992,147 @@ class GroupActivationPlugin(star.Star):
                 await asyncio.shield(self._search_quota.finish(ticket, outcome))
             except Exception as e:
                 logger.warning("[group_activation] 搜索结果统计保存失败: %s", e)
+
+    # ── 6. 图片缓存编号工具（AI 自己决定要不要看旧图）──────
+    @filter.llm_tool(name="list_images")
+    async def list_images(
+        self,
+        event: AstrMessageEvent,
+        sender: str = "",
+        since: str = "",
+        limit: int = 20,
+    ) -> str:
+        '''列出本群缓存图片的编号，用于查找很久以前、当前上下文里没有的图片。
+
+        只在确实需要找旧图时调用；不要反复翻页。可按发送者/时间缩小范围。
+
+        Args:
+            sender(string): 可选，发送者昵称（模糊匹配）
+            since(string): 可选，起始时间，如 2026-10-20 或 2026-10-20 12:00:00
+            limit(number): 最多返回多少条，默认 20，最大 50
+        '''
+        if not self._event_is_current(event):
+            return "请求已取消。"
+        gid = event.get_group_id()
+        if not gid:
+            return "当前不是群聊。"
+        used = int(event.get_extra("ga_list_images_count", 0) or 0)
+        if used >= self.cfg.image_list_max_per_turn:
+            return "本轮已经列过图片目录，不要继续翻页；请直接选择已有编号或回答。"
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if call is None:
+            return "当前平台没有连接微信桥，无法读取图片目录。"
+        try:
+            limit = max(1, min(int(limit or self.cfg.image_list_limit), 50))
+        except (TypeError, ValueError):
+            limit = max(1, min(int(self.cfg.image_list_limit), 50))
+        try:
+            res = await call(
+                "list_cached_images",
+                group_id=gid,
+                sender=str(sender or ""),
+                since=str(since or ""),
+                limit=limit,
+            )
+        except Exception as e:  # noqa: BLE001
+            return f"图片目录查询失败：{e}"
+        event.set_extra("ga_list_images_count", used + 1)
+        if not isinstance(res, dict) or not res.get("ok"):
+            return "图片目录不可用：" + str((res or {}).get("error") or "桥接返回异常")
+        items = res.get("items") or []
+        if not items:
+            return "没有匹配的缓存图片。不要反复查询；可以换发送者/时间，或让用户直接引用那张图。"
+        lines = []
+        for item in items[:limit]:
+            lines.append(
+                "#{id} | {time} | {sender} | {context}".format(
+                    id=item.get("id"),
+                    time=item.get("time") or "",
+                    sender=item.get("sender") or "?",
+                    context=str(item.get("context") or "")[:60],
+                )
+            )
+        tail = ""
+        if res.get("has_more"):
+            tail = "\n（还有更早的图片；如需继续，请用 since 或 sender 缩小范围，不要反复列。）"
+        return (
+            "本群缓存图片（新→旧）：\n"
+            + "\n".join(lines)
+            + tail
+            + "\n需要看哪张，调用 look_image(image_id=编号)。"
+        )
+
+    @filter.llm_tool(name="look_image")
+    async def look_image(self, event: AstrMessageEvent, image_id: int = 0):
+        '''查看本群某张缓存图片。需要看历史图时直接调用本工具，不要先解释“看不到图”。
+
+        一次只看真正需要的那张；取到图片后直接回答，不要转发，也不要反复取同一张。
+
+        Args:
+            image_id(number): 图片编号，例如 L1 里的 [图片 #12] 就填 12
+        '''
+        if not self._event_is_current(event):
+            return TextContent(type="text", text="请求已取消。")
+        gid = event.get_group_id()
+        if not gid:
+            return TextContent(type="text", text="当前不是群聊。")
+        raw = str(image_id).strip().lstrip("#")
+        try:
+            seq = int(float(raw))
+        except (TypeError, ValueError):
+            return TextContent(type="text", text="image_id 必须是数字编号。")
+        if seq <= 0:
+            return TextContent(type="text", text="image_id 必须是大于 0 的编号。")
+        seen = set(event.get_extra("ga_looked_images", set()) or set())
+        if seq in seen:
+            return TextContent(
+                type="text",
+                text=f"图片 #{seq} 已在本轮提供过，不要重复调用；直接回答。",
+            )
+        used = int(event.get_extra("ga_look_count", 0) or 0)
+        if used >= int(self.cfg.image_look_max_per_turn):
+            return TextContent(
+                type="text",
+                text="本轮取图次数已达安全上限，请基于已有信息直接回答，不要再取图。",
+            )
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if call is None:
+            return TextContent(type="text", text="当前平台没有连接微信桥，无法取图。")
+        try:
+            res = await call("get_cached_image", group_id=gid, image_id=seq)
+        except Exception as e:  # noqa: BLE001
+            return TextContent(type="text", text=f"取图失败：{e}")
+        if not isinstance(res, dict) or not res.get("ok"):
+            return TextContent(
+                type="text",
+                text=f"图片 #{seq} 不存在或已过期；不要重试，直接回答或请用户重新发图。",
+            )
+        data = str(res.get("data") or "")
+        if not data:
+            return TextContent(type="text", text=f"图片 #{seq} 没有可读取的内容。")
+        seen.add(seq)
+        event.set_extra("ga_looked_images", seen)
+        event.set_extra("ga_look_count", used + 1)
+        ts = int(res.get("create_time") or 0)
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else "时间未知"
+        sender = str(res.get("sender") or "?")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"这是你请求查看的缓存图片 #{seq}（{sender} / {when}）。"
+                        "仅用于回答当前问题；不要用 send_message_to_user 转发这张图，"
+                        "也不要声称要发图。看完直接回答。"
+                    ),
+                ),
+                ImageContent(
+                    type="image",
+                    data=data,
+                    mimeType=str(res.get("mime") or "image/jpeg"),
+                ),
+            ]
+        )
 
     # ── 7. 调试命令 ──────────────────────────────────
     @filter.command("gaw")

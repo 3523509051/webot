@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from send_result import SendResult
+from image_index import ImageIndex
 
 log = logging.getLogger("wechat")
 
@@ -43,6 +44,10 @@ _EMOJI_CACHE_DIR = Path(__file__).with_name("cache") / "emoji"
 # 本地库现解密（`image_local_id_by_ref` 只扫最近 300 行，微信清理后/超出窗口就找不回），
 # 于是「引用几天前的一张图」会失败（2026-10-16 实测）。
 _IMAGE_CACHE_DIR = Path(__file__).with_name("cache") / "image"
+# 图片索引：每群独立编号、全量保留、单文件。旧的 md5/time 文件仍可被 fallback 命中。
+IMAGE_INDEX = ImageIndex(
+    Path(__file__).with_name("cache") / "image_index.sqlite3", _IMAGE_CACHE_DIR
+)
 _EMOJI_MAX_PX = 1024          # 长边上限：控 token，也控 base64 后的 WS 帧大小
 _EMOJI_MAX_BYTES = 12_000_000  # 下载上限（实测最大的表情 GIF 2.4MB）
 _UA = (
@@ -69,30 +74,32 @@ def md5s_in_packed_info(blob) -> list[str]:
     return out
 
 
-def cached_image(md5: str) -> Path | None:
-    """按 md5 取本地缓存的图片副本（收到图时存的那份）。"""
+def cached_image(md5: str, group_wxid: str | None = None) -> Path | None:
+    """按 md5 取本地缓存的图片副本（先查索引，再兼容旧命名）。"""
     if not md5:
         return None
+    hit = IMAGE_INDEX.find_by_md5(str(md5).lower(), group_wxid)
+    if hit:
+        return Path(hit["file"])
     return _cached_image_file(f"{str(md5).lower()}")
 
 
-def cached_image_by_time(create_time, tolerance: int = 3) -> Path | None:
-    """按「被引用图片的 createtime」取缓存副本（±tolerance 秒容差）。
-
-    为什么必须按时间找：引用 XML 带的 md5 是**原始大图在 CDN 上的 md5**，与本地
-    packed_info 里那份并不相同（2026-10-16 实测：refer=bffee8b9… / 本地=7705a4d1…），
-    而 `<createtime>` 与本地行的 create_time 是严格一致的 —— 这条才是可靠的键。
-    容差与 `image_local_id_by_ref` 保持一致（引用值偶尔差 1 秒）。
-    """
+def cached_image_by_time(
+    create_time, tolerance: int = 3, group_wxid: str | None = None
+) -> Path | None:
+    """按「被引用图片的 createtime」取缓存副本（±tolerance 秒容差）。"""
+    hit = IMAGE_INDEX.find_by_time(create_time, group_wxid, tolerance)
+    if hit:
+        return Path(hit["file"])
     try:
         want = int(create_time)
     except (TypeError, ValueError):
         return None
     for delta in range(0, max(0, int(tolerance)) + 1):
         for t in ({want} if delta == 0 else {want - delta, want + delta}):
-            hit = _cached_image_file(f"t{t}")
-            if hit:
-                return hit
+            hit_path = _cached_image_file(f"t{t}")
+            if hit_path:
+                return hit_path
     return None
 
 
@@ -622,12 +629,20 @@ class WeChatClient:
         return None
 
     def cache_image_for_reference(self, group_id: str, local_id, path: str,
-                                  keep: int = 200) -> int:
-        """收到图片时就按 md5 存一份到 cache/image/（供以后引用时找回）。
+                                  keep: int = 200, sender: str = "",
+                                  context: str = "") -> dict | None:
+        """收到图片时就存进缓存索引（供引用旧图、AI 按编号查看）。
 
-        只在这里付一次磁盘拷贝的代价，引用旧图就不再依赖微信本地库是否还在
-        （微信清理 / 超出 `image_local_id_by_ref` 的 300 行窗口都会让引用失败）。
+        返回索引记录（含本群 seq）；失败返回 None。keep 仅为兼容旧调用，索引
+        不再自动裁剪（保留所有）。
         """
+        try:
+            keep = int(keep)
+        except (TypeError, ValueError):
+            keep = -1
+        # 0 = 关闭图片索引（仍可发当前图，但没有编号）；其它值都保留所有
+        if keep == 0:
+            return None
         try:
             # local_type=3 = 图片；跨分片下 local_id 非全局唯一，带上类型更准
             row = self.db.get_message_row(group_id, local_id, local_type=3)
@@ -635,11 +650,72 @@ class WeChatClient:
             row = self.db.get_message_row(group_id, local_id)
         except Exception as e:  # noqa: BLE001
             log.debug("取图片消息行失败（local_id=%s）: %s", local_id, e)
-            return 0
+            return None
         if not row:
-            return 0
+            return None
         md5s = md5s_in_packed_info(row.get("packed_info"))
-        return save_image_cache(path, md5s, row.get("create_time"), keep)
+        try:
+            return IMAGE_INDEX.add(
+                group_id,
+                path,
+                md5s,
+                row.get("create_time"),
+                sender=sender,
+                context=context,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("图片索引写入失败（%s / local_id=%s）: %s", group_id, local_id, e)
+            return None
+
+    def get_cached_image(self, group_id: str, seq: int) -> dict | None:
+        return IMAGE_INDEX.get(group_id, int(seq))
+
+    def cache_file_for_reference(
+        self,
+        group_id: str,
+        path: str,
+        sender: str = "",
+        context: str = "",
+        md5s: list[str] | None = None,
+        create_time: int | None = None,
+        local_id=None,
+    ) -> dict | None:
+        """给已有本地图片文件（图片/表情包静态帧）分配本群编号。"""
+        try:
+            # 表情包的 normalize 结果没有 create_time；从本地消息行补上，
+            # 否则引用表情包时按时间完全找不到。
+            if not create_time and local_id is not None:
+                try:
+                    row = self.db.get_message_row(group_id, local_id)
+                except Exception:  # noqa: BLE001
+                    row = None
+                if row:
+                    create_time = row.get("create_time")
+                    if not md5s:
+                        md5s = md5s_in_packed_info(row.get("packed_info"))
+        except Exception as e:  # noqa: BLE001
+            log.debug("取表情包时间失败（%s / local_id=%s）: %s", group_id, local_id, e)
+        try:
+            return IMAGE_INDEX.add(
+                group_id,
+                path,
+                md5s or [],
+                create_time,
+                sender=sender,
+                context=context,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("图片索引写入失败（%s）: %s", group_id, e)
+            return None
+
+    def list_cached_images(
+        self,
+        group_id: str,
+        sender: str = "",
+        since: str | int | None = None,
+        limit: int = 20,
+    ) -> dict:
+        return IMAGE_INDEX.list(group_id, sender=sender, since=since, limit=limit)
 
     # ── 成员名单（出站 @ 用）───────────────────────────
     def member_names(self, group_id: str, ttl: float = 600.0) -> set[str]:

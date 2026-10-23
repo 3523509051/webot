@@ -246,6 +246,14 @@ function Invoke-Start {
         # 直接执行会被 PowerShell 当成 NativeCommandError 刷一屏红字（不影响结果，但很吓人）。
         # --no-deps：compose 早期曾 depends_on wechatpadpro（Pad 路线遗留，服务已删除）——
         # 现在没有依赖了，这个参数只是无害的保险，保留。
+        # 本地镜像 webot-astrbot:local 由 Dockerfile.astrbot 构建（图片上限补丁）；
+        # 首次/换机时先构建，否则 compose 会尝试拉一个不存在的本地 tag。
+        cmd /c "docker image inspect webot-astrbot:local >nul 2>&1"
+        if ($LASTEXITCODE -ne 0) {
+            Say '    未找到 webot-astrbot:local，先构建镜像（含图片上限补丁）...'
+            cmd /c "docker compose build astrbot 2>&1" |
+                ForEach-Object { Say "    $($_.ToString().TrimEnd())" }
+        }
         cmd /c "docker compose up -d --no-deps astrbot 2>&1" |
             ForEach-Object { Say "    $($_.ToString().TrimEnd())" }
     } finally {

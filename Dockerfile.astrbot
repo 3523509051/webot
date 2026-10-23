@@ -1,0 +1,19 @@
+# webot 的 AstrBot 镜像：在构建时直接改 media_utils.py 的图片字节上限。
+#
+# AstrBot 默认 MODEL_IMAGE_MAX_BYTES = 512KB，超过会重新编码/降分辨率。
+# 这里在镜像里直接改成 8MB，使 docker compose up --force-recreate 后仍然生效。
+#
+# 更新基础镜像后需要重新构建：
+#   docker compose build --pull astrbot
+#   docker compose up -d astrbot
+FROM soulter/astrbot:latest
+
+RUN python3 -c "from pathlib import Path; \
+p = Path('/AstrBot/astrbot/core/utils/media_utils.py'); \
+s = p.read_text(encoding='utf-8'); \
+old = 'MODEL_IMAGE_MAX_BYTES = 512 * 1024'; \
+new = 'MODEL_IMAGE_MAX_BYTES = 8 * 1024 * 1024'; \
+s = s.replace(old, new, 1) if old in s else s; \
+assert new in s, 'MODEL_IMAGE_MAX_BYTES target not found'; \
+p.write_text(s, encoding='utf-8')" \
+    && grep -q 'MODEL_IMAGE_MAX_BYTES = 8 \* 1024 \* 1024' /AstrBot/astrbot/core/utils/media_utils.py
