@@ -33,6 +33,7 @@ from wechat_client import (WeChatClient, cached_image, cached_image_by_time,
                            cached_sticker)
 from safe_browser import read_website
 from browser_search import browser_search
+from sticker_library import StickerLibrary
 
 CONFIG_PATH = Path(__file__).with_name("config.json")
 
@@ -40,6 +41,9 @@ CONFIG_PATH = Path(__file__).with_name("config.json")
 # 也要打日志。早先只在 main() 里定义了 log，结果这些函数一走到日志分支就
 # NameError 崩掉（用真实引用回复消息做本地验证时才暴露出来）。
 log = logging.getLogger("bridge")
+
+# 表情库是本地数据，不进 Git；路径固定在仓库根目录的 stickers/。
+STICKERS = StickerLibrary(Path(__file__).resolve().parent.parent / "stickers")
 
 DEFAULT_CONFIG = {
     "astrbot": {
@@ -865,6 +869,158 @@ async def main() -> int:
                     "context": str(item.get("context") or "")[:120],
                 })
             return {"ok": True, "items": items, "has_more": bool(result.get("has_more"))}
+        if action == "list_stickers":
+            try:
+                sticker_limit = int(params.get("limit") or 12)
+            except (TypeError, ValueError):
+                sticker_limit = 12
+            return {
+                "ok": True,
+                "items": STICKERS.search(
+                    query=str(params.get("query") or ""),
+                    emotion=str(params.get("emotion") or ""),
+                    scene=str(params.get("scene") or ""),
+                    limit=sticker_limit,
+                ),
+            }
+        if action == "save_sticker":
+            gid = params.get("group_id")
+            wxid = _wxid_of(gid)
+            if not wxid:
+                return {"ok": False, "error": "group_not_found"}
+            try:
+                seq = int(params.get("image_id") or 0)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "bad_image_id"}
+            src = wx.get_cached_image(wxid, seq)
+            if not src:
+                return {"ok": False, "error": "image_not_found"}
+            try:
+                saved = STICKERS.add(
+                    src["file"],
+                    name=str(params.get("name") or "表情"),
+                    emotion=str(params.get("emotion") or ""),
+                    scenes=params.get("scenes"),
+                    tags=params.get("tags"),
+                    description=str(params.get("description") or ""),
+                    group=_name_of(gid) or gid or "",
+                    sender=str(src.get("sender") or ""),
+                    image_id=seq,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("表情入库失败: %s", e)
+                return {"ok": False, "error": str(e)}
+            log.info("[表情] 已入库 %s（%s）", saved.get("id"), saved.get("name"))
+            return {"ok": True, "sticker": saved}
+        if action == "sticker_send":
+            gid = params.get("group_id")
+            name = _name_of(gid)
+            item = STICKERS.find(str(params.get("sticker_id") or "").strip().lstrip("#"))
+            if not name:
+                return {"ok": False, "error": "group_not_found"}
+            if not item:
+                return {"ok": False, "error": "sticker_not_found"}
+            outcome = await asyncio.to_thread(
+                wx.send_image, name, item["path"]
+            )
+            if not outcome:
+                state = outcome.state if isinstance(outcome, SendResult) else "unknown"
+                detail = outcome.detail if isinstance(outcome, SendResult) else "发送失败"
+                return {"ok": False, "state": state, "error": detail}
+            STICKERS.mark_used(item["id"])
+            return {
+                "ok": True,
+                "sticker_id": item["id"],
+                "name": item.get("name") or "",
+            }
+        if action == "text_sticker":
+            gid = params.get("group_id")
+            name = _name_of(gid)
+            target = str(
+                params.get("sticker") or params.get("sticker_id") or ""
+            ).strip().lstrip("#")
+            if not name:
+                return {"ok": False, "error": "group_not_found", "sent_text": False}
+            item = STICKERS.find(target)
+            if not item and target:
+                hits = STICKERS.search(
+                    query=target, emotion=target, scene=target, limit=1
+                )
+                if hits:
+                    item = STICKERS.find(hits[0]["id"])
+            if not item:
+                return {"ok": False, "error": "sticker_not_found", "sent_text": False}
+            body = str(params.get("text") or "")
+            meaningful = re.sub(r"@[^\s]+", "", body)
+            meaningful = re.sub(r"[\s。.!！?？~～,，、;；:：]+", "", meaningful)
+            if not meaningful:
+                # 模型只写了 @/标记时，桥侧再兜一层，绝不发空 @。
+                body = (
+                    body + f" 好嘞，给你配一个{item.get('name') or ''}表情。"
+                ).strip()
+            log.info(
+                "[表情] text_sticker 目标=%s 正文=%r",
+                item.get("id"),
+                body[:200],
+            )
+            wxid = _wxid_of(gid)
+            names = wx.member_names(wxid) if wxid else set()
+            parts = []
+            if "@" in body and names:
+                parts = parse_mentions(
+                    body,
+                    names,
+                    int(cfg["wechat"].get("max_mentions", 3) or 3),
+                )
+            if parts:
+                # parse_mentions 输出的是 send_at_multi 需要的
+                # {"type":"at","name":...} / {"type":"text","text":...}，
+                # 不能用 build_segments 的 OneBot data 段。
+                await asyncio.to_thread(wx.ensure_visible)
+                at_result = await asyncio.to_thread(wx.send_at_multi, name, parts)
+                sent_text = bool(at_result) or (
+                    isinstance(at_result, SendResult)
+                    and at_result.state == "unknown"
+                )
+                if not sent_text:
+                    return {
+                        "ok": False,
+                        "error": "文字发送失败",
+                        "sent_text": False,
+                        "sticker_id": item["id"],
+                    }
+                image_result = await asyncio.to_thread(
+                    wx.send_image, name, item["path"]
+                )
+                if not image_result:
+                    return {
+                        "ok": False,
+                        "error": f"图片发送失败：{image_result.detail or image_result.state}",
+                        "sent_text": True,
+                        "sticker_id": item["id"],
+                    }
+                outcome = {"ok": True, "sent_text": True}
+            else:
+                outcome = await asyncio.to_thread(
+                    wx.send_text_and_image,
+                    name,
+                    body,
+                    item["path"],
+                )
+            if not outcome.get("ok"):
+                return {
+                    "ok": False,
+                    "error": outcome.get("error") or "发送失败",
+                    "sent_text": bool(outcome.get("sent_text")),
+                    "sticker_id": item["id"],
+                }
+            STICKERS.mark_used(item["id"])
+            return {
+                "ok": True,
+                "sent_text": bool(outcome.get("sent_text")),
+                "sticker_id": item["id"],
+                "name": item.get("name") or "",
+            }
         if action == "can_send_image":
             return {"yes": True}
         if action == "can_send_record":
@@ -1046,6 +1202,14 @@ async def main() -> int:
                 # 否则会堵住轮询循环、拖慢整个群的消息延迟。
                 if "文本" not in mtype:
                     if not send_images:
+                        continue
+                    if m.get("is_self"):
+                        log.info("[跳过] 自己发送的非文本消息（类型=%s）", mtype)
+                        continue
+                    if ("图片" in mtype or "表情" in mtype) and wx.consume_self_image_echo(
+                        g["name"], m.get("sender_name", "")
+                    ):
+                        log.info("[跳过] 机器人自己发图的回声（%s）", g["name"])
                         continue
                     try:
                         segments = await asyncio.to_thread(

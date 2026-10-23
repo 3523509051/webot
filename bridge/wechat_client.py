@@ -238,6 +238,12 @@ class WeChatClient:
         self._md = None
         # 群成员名缓存：群号 -> (取到的时间, 名字集合)
         self._member_cache: dict[str, tuple[float, set[str]]] = {}
+        # 机器人刚发出的图片回声：群名 -> 截止时间。微信会把自发图片作为新消息
+        # 再读回来，sender 偶尔识别成「群成员」；不拦住会让模型再次看图/描述。
+        self._self_image_echo_until: dict[str, float] = {}
+        # 输入框坐标缓存：同一会话连续发图时跳过 get_input_box 的重校准。
+        self._last_input_box: tuple[int, int, int, int] | None = None
+        self._last_input_group: str = ""
         self.refresh_contacts()
 
         # 已配置的群名，用于把 UIA 读到的会话名解析回标准群名
@@ -786,6 +792,183 @@ class WeChatClient:
         except Exception as e:
             return SendResult("unknown", f"已操作发送，但回读失败：{e}；不自动重发")
 
+    def note_self_image_sent(self, group_name: str, ttl: float = 45.0) -> None:
+        if group_name:
+            self._self_image_echo_until[group_name] = time.time() + max(5.0, ttl)
+
+    def consume_self_image_echo(
+        self, group_name: str, sender_name: str = "", ttl: float = 45.0
+    ) -> bool:
+        """机器人刚发图后的第一条「群成员」图片回声，只吞一次。"""
+        now = time.time()
+        until = self._self_image_echo_until.get(group_name, 0.0)
+        if until <= 0:
+            return False
+        if now > until:
+            self._self_image_echo_until.pop(group_name, None)
+            return False
+        # 已识别出发送者名字的图片不吞，避免误伤真人刚发的图。
+        if sender_name and sender_name not in ("群成员", "未知", "?"):
+            return False
+        self._self_image_echo_until.pop(group_name, None)
+        return True
+
+    def _paste_image_fast(self, box, path: str) -> bool:
+        """快速粘贴图片：复用输入框，草稿只等 2 秒，失败回退标准路径。"""
+        try:
+            from wechatauto.guia import VK_A, VK_DELETE, VK_RETURN, VK_V
+            from wechatauto.uia_driver import rhythm
+
+            if not self.gui.focus_input(box):
+                return False
+            if not self.gui.copy_files_to_clipboard([path]):
+                return False
+            time.sleep(0.25)
+            self.gui._input.key(VK_A, ctrl=True)
+            self.gui._input.key(VK_DELETE)
+            self.gui._input.key(VK_V, ctrl=True)
+            if not self.gui._input_box_has_color_draft(box, wait=2.0):
+                return False
+            rhythm.gate("send")
+            self.gui._input.key(VK_RETURN)
+            rhythm.nap(0.8)
+            return True
+        except Exception as e:  # noqa: BLE001
+            log.debug("快速粘贴图片失败: %s", e)
+            return False
+
+    def send_image(self, group_name: str, path: str,
+                   verify: bool | None = None) -> SendResult:
+        """发送本地图片/GIF（微信图片气泡，不是真正的 sticker 消息）。"""
+        p = Path(path)
+        if not p.is_file() or p.stat().st_size <= 0:
+            return SendResult("failed", f"图片不存在：{path}")
+        verify_final = self.verify_send if verify is None else bool(verify)
+        # 必须在发送动作之前打标记：微信可能在 UIA 回车过程中就把自发图片读回来。
+        self.note_self_image_sent(group_name)
+        # 当前会话直发：跳过 gui.send_image 的 open_chat/布局重校准。
+        # 微信发图慢的主要原因是“先切会话再校准输入框”，不是文件 IO。
+        if not verify_final:
+            try:
+                uia = self.gui._get_uia()
+                cur = uia.current_chat() if uia is not None else None
+                if cur and self._same_chat(cur, group_name):
+                    box = (
+                        self._last_input_box
+                        if self._last_input_group == group_name
+                        else None
+                    )
+                    if box is None:
+                        # wechatauto 自己也有最近成功发送的输入框缓存，优先复用，
+                        # 避免每次发图都做 6 次探针 + 重校准。
+                        box = getattr(self.gui, "_last_input_box", None)
+                    if box is None:
+                        box = self.gui.get_input_box()
+                    if box and self._paste_image_fast(box, str(p)):
+                        self.gui._current_chat = group_name
+                        self._last_input_box = box
+                        self._last_input_group = group_name
+                        self.note_self_image_sent(group_name)
+                        log.info(
+                            "[发送图片] %s（%s，%d 字节，fast-paste）",
+                            group_name,
+                            p.name,
+                            p.stat().st_size,
+                        )
+                        return SendResult("sent", "当前会话快速发图")
+                    if box and self.gui._paste_attachment_and_send(str(p), box):
+                        self.gui._current_chat = group_name
+                        self._last_input_box = box
+                        self._last_input_group = group_name
+                        self.note_self_image_sent(group_name)
+                        log.info(
+                            "[发送图片] %s（%s，%d 字节，current-direct）",
+                            group_name,
+                            p.name,
+                            p.stat().st_size,
+                        )
+                        return SendResult("sent", "当前会话直发")
+            except Exception as e:  # noqa: BLE001
+                log.debug("图片当前会话直发失败，回退 gui.send_image: %s", e)
+        try:
+            resp = self.gui.send_image(
+                str(p),
+                group_name,
+                verify=verify_final,
+            )
+            outcome = SendResult.from_gui(resp)
+            if outcome:
+                self.note_self_image_sent(group_name)
+            log.info(
+                "[发送图片] %s（%s，%d 字节）: %s",
+                group_name,
+                p.name,
+                p.stat().st_size,
+                outcome.detail or outcome.state,
+            )
+            return outcome
+        except Exception as e:  # noqa: BLE001
+            log.warning("发送图片异常 %s: %s", path, e)
+            return SendResult("unknown", f"发送图片异常：{e}")
+
+    def ensure_visible(self) -> bool:
+        """把微信置前，避免文字点击落到别的窗口（图片直发不受影响）。"""
+        try:
+            return bool(self.gui.ensure_visible(keep_topmost=False))
+        except Exception as e:  # noqa: BLE001
+            log.warning("微信置前失败: %s", e)
+            return False
+
+    def send_text_and_image(
+        self, group_name: str, text: str, path: str
+    ) -> dict:
+        """先发文字，再在同一会话发图片（给回复标记用）。"""
+        body = str(text or "").strip()
+        sent_text = False
+        if body:
+            # 文字点击是前台操作；微信被挡住时 SendKeys 会打到别的窗口。
+            self.ensure_visible()
+            result = self.send_text(group_name, body)
+            # unknown 也按“可能已发出”处理，避免插件把同一段文字再发一次。
+            sent_text = result.state in ("sent", "unknown")
+            if not sent_text:
+                return {
+                    "ok": False,
+                    "sent_text": False,
+                    "error": f"文字发送失败：{result.detail or result.state}",
+                }
+        image_result = self.send_image(group_name, path)
+        if not image_result:
+            return {
+                "ok": False,
+                "sent_text": sent_text,
+                "error": f"图片发送失败：{image_result.detail or image_result.state}",
+            }
+        return {
+            "ok": True,
+            "sent_text": sent_text,
+            "detail": "文字+图片已发送" if sent_text else "图片已发送",
+        }
+
+    def _cache_input_box(self, uia, group_name: str) -> None:
+        """文字发完后缓存输入框坐标，紧接着发图时不再重新探测/校准。"""
+        try:
+            edit = uia._chat_input(getattr(uia, "_win", None))
+            rect = edit.BoundingRectangle
+            ox = int(getattr(self.gui, "origin_x", 0))
+            oy = int(getattr(self.gui, "origin_y", 0))
+            box = (
+                int(rect.left) - ox,
+                int(rect.top) - oy,
+                int(rect.right) - ox,
+                int(rect.bottom) - oy,
+            )
+            self._last_input_box = box
+            self._last_input_group = group_name
+            self.gui._last_input_box = box
+        except Exception as e:  # noqa: BLE001
+            log.debug("缓存输入框坐标失败: %s", e)
+
     def send_text(self, group_name: str, text: str) -> SendResult:
         """发送文本。**已在目标会话时直接发送，绝不查找 / 切换会话。**
 
@@ -832,6 +1015,8 @@ class WeChatClient:
         if not ok:
             log.warning("[发送未确认] %s: state=%s %s", group_name, ok.state, ok.detail)
             return ok
+        if uia is not None and via == "direct":
+            self._cache_input_box(uia, group_name)
 
         log.info(
             "[发送] %s: %s (探测 %.2fs + 发送 %.2fs, 当前会话=%r, 同名=%s, 路径=%s)",
@@ -1091,6 +1276,7 @@ class WeChatClient:
         except Exception as e:  # noqa: BLE001
             log.warning("UIA 发送结果不确定: %s", e)
             return SendResult("unknown", str(e))
+        self._cache_input_box(uia, group_name)
 
         if self.verify_send:
             # @ tokens split before/after in the DB; verify both text portions after the watermark.
@@ -1245,6 +1431,7 @@ class WeChatClient:
         except Exception as e:  # noqa: BLE001
             log.warning("UIA 发送结果不确定: %s", e)
             return SendResult("unknown", str(e))
+        self._cache_input_box(uia, group_name)
 
         if self.verify_send:
             check = [p.strip() for p in text_parts if p.strip()]

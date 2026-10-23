@@ -49,5 +49,8 @@
   "image_history_max_turns": 4,
   "image_history_max_chars": 6000,
   "preflight_enable": true,
-  "preflight_timeout": 8.0
+  "preflight_timeout": 8.0,
+  "sticker_send_max_per_turn": 1,
+  "sticker_save_max_per_turn": 1,
+  "sticker_send_timeout": 90.0
 }

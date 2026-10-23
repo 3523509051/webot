@@ -219,6 +219,11 @@ class PluginConfig:
     image_look_max_per_turn: int = 10
     image_list_max_per_turn: int = 2
     image_list_limit: int = 20
+    # 本地表情库：每条回复最多发/入库几张（防刷屏、防乱存）
+    sticker_send_max_per_turn: int = 1
+    sticker_save_max_per_turn: int = 1
+    # 图片发送需要切会话/UIA 校准，实测可能 25s+；太短会“图片已发出但工具报失败”。
+    sticker_send_timeout: float = 90.0
     bot_names: list[str] = field(default_factory=list)
     # ↑ 机器人自己的昵称补充（自动从桥的 OneBot get_login_info 取，这里只补别名/错字）
 

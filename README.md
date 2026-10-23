@@ -57,12 +57,13 @@
 
 ### 新功能与升级
 
-当前版本 **v0.18.0**：纯文字窗口消息先走 L1-only 接话判定，PASS 跳过完整请求；@ / 明确请求不分类；只有 **@ + 引用图片** 自动带图，其余图片只给 L1 编号、按需 `look_image`；图片请求压缩 L2；图片按群独立编号、全量缓存；默认不降分辨率；支持多 @、完整成员名单、先图后问兜底、后台搜索/天气/网页读取。
+当前版本 **v0.19.0**：新增本地表情库，AI 可检索、发送、入库表情图片（图片气泡）；文字+表情用 `[[表情:...]]` 标记一次 API 完成，发送顺序固定文字→图片；窗口 preflight、@+引用图策略、图片 L1 编号、L2 压缩等沿用 v0.18.0。
 
-已有服务器请按 [新功能升级指南](docs/upgrade-v0.18.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
+已有服务器请按 [新功能升级指南](docs/upgrade-v0.19.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
 ### 消耗控制
 
+- v0.19.0 本地表情库：`D:\webot\stickers` 保存图片与 `index.json`；`list_stickers` 按情绪/场景/关键词检索，`send_sticker` 用 `gui.send_image` 发图片气泡，`save_sticker` 把本群缓存图片正式入库并让 AI 命名、打标签。每条回复最多发 1 张、入库 1 张；同图 sha256 去重，不覆盖不删除。
 - v0.18.0 接话 preflight：@ 后的 30 秒窗口内，非 @、非明确请求的**纯文字**批次先用 L1 + 本批 + 机器人上一句判定；PASS 直接停止，不调用完整模型；JOIN 才带 L2/L3/L4 回答。@ 和明确请求直接完整回答，不加分类延迟。
 - v0.18.0 窗口图片：只有 **@ + 引用图片** 自动附图；@ 配新图、窗口期非 @ 图都只保留 `[图片 #ID]`，模型需要时调用 `look_image`。
 - v0.18.0 图片请求压 L2：只有 **@ + 引用图片** 的请求只带最近 `image_history_max_turns=4` 轮 / `image_history_max_chars=6000` 字；纯文字、@ 新图仍 8 轮 / 12000 字。
@@ -353,7 +354,7 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 ```
 
 改完插件代码后要 `docker compose restart astrbot`，并看日志确认版本：
-`[group_activation] 已加载 v0.18.0 …`
+`[group_activation] 已加载 v0.19.0 …`
 
 #### 4.1 插件参数（可选，按需改）
 
@@ -378,6 +379,9 @@ docker exec webot-astrbot cat /AstrBot/data/plugins/astrbot_plugin_group_activat
 | `image_look_max_per_turn` | 10 | 每轮最多调用几次 `look_image`（防工具循环） |
 | `image_list_max_per_turn` | 2 | 每轮最多调用几次 `list_images` |
 | `image_list_limit` | 20 | `list_images` 默认返回条数（硬上限 50） |
+| `sticker_send_max_per_turn` | 1 | 每条回复最多发几张本地表情 |
+| `sticker_save_max_per_turn` | 1 | 每条回复最多入库几张表情 |
+| `sticker_send_timeout` | 90 | 图片发送工具等待桥完成的秒数；不要设太短 |
 | `strip_history_images` | true | 把 L2 历史消息里的图换成占位，避免每轮重发 |
 | `stripped_image_placeholder` | `[图片]` | 剥离历史图后的占位文字 |
 | `mention_only_sender` | false | true = 只允许 @ 发送者、删除多余 @；false 才支持多 @ 和 @ 其他成员 |
@@ -590,16 +594,35 @@ notepad config.json
 - **图片请求压 L2**：只有 **@ + 引用图片** 的请求用 `image_history_max_turns=4` / `image_history_max_chars=6000`；纯文字、@ 新图、窗口消息仍 8 / 12000。`look_image` 是在同一请求内调用的，无法在工具调用时再压 L2。
 - **失败策略**：分类器超时/异常/输出无法解析时 fail-open，继续完整请求，避免装死。
 
+#### 5.10 本地表情库（v0.19.0）
+
+目录：
+
+```text
+D:\webot\stickers\
+  index.json
+  files\st_0001_无语_无语扶额.gif
+```
+
+- `list_stickers(query?, emotion?, scene?, limit?)`：按情绪/场景/关键词检索；
+- **文字 + 表情（推荐）**：模型在最终回复末尾写 `[[表情:无语]]` 或 `[[表情:st_0006]]`；插件解析标记，调用桥的 `text_sticker` 在一个动作里先发文字再发图，只消耗**一次模型 API**，且顺序固定文字→图片；
+- 标记必须放在**完整正文**末尾；不能只写 @ 或只写标记，否则插件/桥会自动补一句兜底正文，避免空 @；
+- `text_sticker` 含 @ 时会走真实 @ 再发图；发图复用文字发送后的输入框缓存并优先 fast-paste，但仍受微信 UIA 粘贴/检测时间限制；
+- 机器人自己发出的图片会被桥识别为回声并丢弃，不会重新进 L1/视觉；
+- `send_sticker(sticker_id, standalone=false)`：默认把表情排队，等文字发送后补图；`standalone=true` 时只发这一张表情、丢弃最终文字，适合“用一个表情表达看法”；桥用 `gui.send_image` 发**图片气泡**，不是微信 sticker 消息；
+- `save_sticker(image_id, name, emotion, scenes, tags, description)`：把本群缓存图正式入库，AI 命名/打标签；同图 sha256 去重，不覆盖不删除；
+- 每条回复最多发 1 张、入库 1 张（`sticker_send_max_per_turn` / `sticker_save_max_per_turn`）；
+- 图片和 `index.json` 不进 Git，详见 [stickers/README.md](stickers/README.md)。
+
 ### 6. 验证（按顺序做六条）
 
 微信停在目标群、不锁屏，然后：
 
 1. **纯文本**：群里发 `@你的机器人 你好` → 数秒内回复；
    桥日志出现 `[收到]` → `[上报]` → `[发送@]` 三段。
-2. **看图**：`@你的机器人` 同时发一张图 → 它能描述图片内容
-   （纯文本模型会失败，见 §3.2 的看图说明）。
+2. **引用图**：引用一张图并 `@你的机器人` → 它能描述引用图（只有 @ + 引用图自动附图）。
 3. **先图后问**：先单发一张图（不 @），30 秒内再发 `这张图里写了什么`
-   → 只回一条，且带图。
+   → 窗口期只给 L1 编号，模型需要时 `look_image`；不应自动把图塞进请求。
 4. **记忆**：先聊两句，再 `@你的机器人 刚才我们说到哪了` → 能接上上下文。
 5. **多 @ / 转告**：`@你的机器人 你查一下高斯生平，然后告诉NULL，同时也提醒我待会查山姆生平`
    → 回复里 `@NULL` 和 `@NONE` 两段都有正文；桥日志出现 `共2个`。

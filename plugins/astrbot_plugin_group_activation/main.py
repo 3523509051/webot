@@ -58,7 +58,7 @@ from .web_policy import (authorized_urls, blocked_text, clean_url,
                          revokes_website, strip_leading_verb)
 from .window import WindowManager
 
-VERSION = "0.18.0"
+VERSION = "0.19.0"
 PLUGIN_NAME = "astrbot_plugin_group_activation"
 
 # 本插件的命令名（小写）。用途见 on_group_message 里的说明：AstrBot 交给
@@ -174,6 +174,8 @@ class GroupActivationPlugin(star.Star):
         # 「先发图、再问这是什么」：key="群:发送者" -> (图片引用, 时间)。
         # 图片只在它自己那条事件里会送给模型，后一条纯文字消息得靠这里补挂（见 inject_memory）。
         self._last_image: dict[str, tuple[list[str], float]] = {}
+        # 独立表情：standalone 模式下后台发图，避免阻塞最终回复。
+        self._sticker_tasks: set[asyncio.Task] = set()
         # 本群完整成员名单（桥的 get_group_member_list），gid -> names / 拉取时间。
         # 不能只靠 L1/L3：清空记忆后模型会不知道没发过言的人，也就不会 @ 他。
         self._group_members: dict[str, list[str]] = {}
@@ -1285,6 +1287,13 @@ class GroupActivationPlugin(star.Star):
         parts.append("天气问题只调用 amap_weather，不调用 web_search 或网站读取；不需要用户说联网或搜索。"
                      "有明确城市时查高德实况，明天/未来几天查预报并按返回日期筛选；缺少城市先询问，不能根据群名或其他人的位置猜测。"
                      "明确告诉用户数据来源和 reporttime；失败或超出预报范围就如实说明，不编造、不换百度。")
+        parts.append("本地表情库：文字后想配表情时，在完整正文末尾写 [[表情:无语]] 或 "
+                     "[[表情:st_0006]]；插件会先发文字、再发图，不要再调用 send_sticker。"
+                     "标记只能放在正文最后，不能只写 @ 或只写标记；正文必须有实际内容。"
+                     "只有想单独发表情、不写文字时，才调用 send_sticker(standalone=true)。"
+                     "某张已看过的图适合当表情时可用 save_sticker 入库并给中文名/情绪/场景/标签。"
+                     "每条回复最多发 1 张、入库 1 张，不要刷屏；send_sticker / save_sticker "
+                     "不会把图片返回给你，发送或入库后不要再 look_image 看同一张。")
         ids = event.get_extra("ga_batch_ids", [str(event.get_sender_id() or "")])
         for sid in ids:
             task = self._number_tasks.get(f"{gid}:{sid}")
@@ -1463,6 +1472,89 @@ class GroupActivationPlugin(star.Star):
         if not self._event_is_current(event):
             raise asyncio.CancelledError()
 
+    # ── 2.4 回复标记：文字 + 表情一次桥接 ─────────────
+    @filter.on_decorating_result()
+    async def send_text_sticker_marker(self, event: AstrMessageEvent) -> None:
+        """解析回复末尾的 [[表情:...]]，让桥先发文字再发图，只消耗一次模型 API。"""
+        if event.get_extra("ga_sticker_only", False):
+            return
+        result = event.get_result()
+        if result is None or not result.chain:
+            return
+        raw = result.get_plain_text() or ""
+        marker = re.compile(
+            r"\[\[\s*(?:表情|sticker)\s*[:：]\s*([^\]\n]{1,60}?)\s*\]\]",
+            re.I,
+        )
+        match = marker.search(raw)
+        if not match:
+            return
+        gid = event.get_group_id()
+        target = match.group(1).strip().lstrip("#")
+        cleaned = marker.sub("", raw).strip()
+        # 模型偶尔只输出「@某人 [[表情:...]]」没有正文；这里补一句可见文字，
+        # 否则桥会先发一个空 @，再发图，用户看不到正文。
+        meaningful = re.sub(r"@[^\s]+", "", cleaned)
+        meaningful = re.sub(r"[\s。.!！?？~～,，、;；:：]+", "", meaningful)
+        if not meaningful:
+            label = "" if target.lower().startswith("st_") else target[:12]
+            lead = " ".join(re.findall(r"@[^\s]+", cleaned))
+            fallback = (
+                f"好嘞，给你配一个{label}表情。"
+                if label else "好嘞，给你配一个表情。"
+            )
+            cleaned = (lead + " " + fallback).strip()
+            logger.warning(
+                "[group_activation] 表情标记缺少正文，已补兜底文字：raw=%r -> %r",
+                raw,
+                cleaned,
+            )
+        logger.info(
+            "[group_activation] 表情标记解析：raw=%r cleaned=%r target=%r",
+            raw[:200],
+            cleaned[:200],
+            target,
+        )
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if not gid or call is None:
+            event.set_result(event.plain_result(cleaned))
+            return
+        try:
+            res = await asyncio.wait_for(
+                call("text_sticker", group_id=gid, text=cleaned, sticker=target),
+                timeout=max(30.0, float(self.cfg.sticker_send_timeout)),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[group_activation] 文字+表情发送异常: %s", e)
+            event.set_result(event.plain_result(cleaned))
+            return
+        if isinstance(res, dict) and res.get("ok"):
+            event.clear_result()
+            logger.info(
+                "[group_activation] 文字+表情已发送（%s，文字=%s）",
+                res.get("sticker_id"),
+                bool(res.get("sent_text")),
+            )
+            return
+        if isinstance(res, dict) and res.get("sent_text"):
+            # 文字已经发出，图片失败；清空结果，避免同一段文字再发一次。
+            event.clear_result()
+            logger.warning(
+                "[group_activation] 文字已发但表情失败（%s）：%s",
+                target,
+                res.get("error"),
+            )
+            return
+        logger.warning(
+            "[group_activation] 表情未找到，按纯文字发送（%s）：%s",
+            target,
+            (res or {}).get("error") if isinstance(res, dict) else res,
+        )
+        if cleaned:
+            event.set_result(event.plain_result(cleaned))
+        else:
+            event.clear_result()
+
     # ── 2.5 @ 校正：回复里的 @ 只允许指向本条消息的发送者 ─────
     @filter.on_decorating_result()
     async def fix_mentions(self, event: AstrMessageEvent) -> None:
@@ -1588,6 +1680,10 @@ class GroupActivationPlugin(star.Star):
         若改成「插件先调一次 LLM 判定」，每次接话都会多约 1.2 秒。
         """
         if not self._event_is_current(event):
+            event.clear_result()
+            return
+        # standalone 表情：工具已在后台发图，最终文字全部丢弃，避免“表情+解释”。
+        if event.get_extra("ga_sticker_only", False):
             event.clear_result()
             return
         if not self.cfg.llm_decides_participation:
@@ -2278,6 +2374,218 @@ class GroupActivationPlugin(star.Star):
                     mimeType=str(res.get("mime") or "image/jpeg"),
                 ),
             ]
+        )
+
+    # ── 6.2 本地表情库（图片气泡发送，不是微信 sticker 消息）──────
+    @filter.llm_tool(name="list_stickers")
+    async def list_stickers(
+        self,
+        event: AstrMessageEvent,
+        query: str = "",
+        emotion: str = "",
+        scene: str = "",
+        limit: int = 12,
+    ) -> str:
+        '''按情绪/场景检索本地表情库。想发或找表情时调用；不要反复列。
+
+        Args:
+            query(string): 可选关键词，匹配名称/描述/标签
+            emotion(string): 可选情绪，如 开心/无语/震惊
+            scene(string): 可选使用场景，如 被问住/庆祝/赞同
+            limit(number): 最多返回几条，默认 12，最大 30
+        '''
+        if not self._event_is_current(event):
+            return "请求已取消。"
+        gid = event.get_group_id()
+        if not gid:
+            return "当前不是群聊。"
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if call is None:
+            return "当前平台没有连接微信桥，无法读取表情库。"
+        try:
+            limit = max(1, min(int(limit or 12), 30))
+        except (TypeError, ValueError):
+            limit = 12
+        try:
+            res = await call(
+                "list_stickers",
+                query=str(query or ""),
+                emotion=str(emotion or ""),
+                scene=str(scene or ""),
+                limit=limit,
+            )
+        except Exception as e:  # noqa: BLE001
+            return f"表情库查询失败：{e}"
+        if not isinstance(res, dict) or not res.get("ok"):
+            return "表情库不可用：" + str((res or {}).get("error") or "桥接返回异常")
+        items = res.get("items") or []
+        if not items:
+            return "没有匹配的表情。不要反复查；可以换情绪/场景，或先 save_sticker 入库。"
+        lines = []
+        for item in items[:limit]:
+            lines.append(
+                "#{id} {name} | 情绪:{emotion} | 场景:{scenes} | 标签:{tags}".format(
+                    id=item.get("id"),
+                    name=item.get("name") or "",
+                    emotion=item.get("emotion") or "",
+                    scenes="、".join(item.get("scenes") or []) or "-",
+                    tags="、".join(item.get("tags") or []) or "-",
+                )
+            )
+        return "本地表情库：\n" + "\n".join(lines) + "\n发送用 send_sticker(sticker_id=...)。"
+
+    @filter.llm_tool(name="send_sticker")
+    async def send_sticker(
+        self, event: AstrMessageEvent, sticker_id: str = "", standalone: bool = False
+    ) -> str:
+        '''发送本地表情。默认排队到文字后补图；standalone=true 时单独发表情、不写文字。
+
+        图片由桥直接发到微信，不会返回给模型；发送后不需要再 look_image。
+        表情本身比文字更有冲击力、或用户只想要一个反应时，用 standalone=true。
+
+        Args:
+            sticker_id(string): list_stickers 返回的 id，如 st_0001
+            standalone(boolean): true=只发这张表情，不配文字；false=文字发送后补图
+        '''
+        if not self._event_is_current(event):
+            return "请求已取消。"
+        gid = event.get_group_id()
+        if not gid:
+            return "当前不是群聊。"
+        sid = str(sticker_id or "").strip().lstrip("#")
+        if not sid:
+            return "sticker_id 不能为空。"
+        used = int(event.get_extra("ga_sticker_sent", 0) or 0)
+        queued = event.get_extra("ga_pending_sticker")
+        if queued or used >= int(self.cfg.sticker_send_max_per_turn):
+            return "本轮已经安排过表情，不要连续刷屏；用文字继续。"
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if call is None:
+            return "当前平台没有连接微信桥，无法发送表情。"
+        if standalone:
+            # 单独表情：后台发图，最终文字由 on_decorating_result 清空。
+            event.set_extra("ga_sticker_only", True)
+            event.set_extra("ga_sticker_sent", 1)
+            task = asyncio.create_task(
+                self._send_sticker_background(call, gid, sid)
+            )
+            self._sticker_tasks.add(task)
+            task.add_done_callback(self._sticker_tasks.discard)
+            return (
+                f"已安排单独表情 {sid}，不要写任何文字；图片会在后台发出。"
+                "不要 look_image，也不要再发一条表情。"
+            )
+        event.set_extra("ga_pending_sticker", sid)
+        return (
+            f"已排队表情 {sid}：先把文字回复正常发出去，插件会在文字发送后补图。"
+            "不要再用 look_image，也不要转发表情。"
+        )
+
+    async def _send_sticker_background(self, call, gid: str, sid: str) -> None:
+        try:
+            res = await asyncio.wait_for(
+                call("sticker_send", group_id=gid, sticker_id=sid),
+                timeout=max(30.0, float(self.cfg.sticker_send_timeout)),
+            )
+            if isinstance(res, dict) and res.get("ok"):
+                logger.info("[group_activation] 单独表情 %s 发送成功", sid)
+            else:
+                logger.warning("[group_activation] 单独表情 %s 发送失败：%s", sid, res)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[group_activation] 单独表情 %s 异常：%s", sid, e)
+
+    @filter.after_message_sent()
+    async def send_pending_sticker(self, event: AstrMessageEvent) -> None:
+        """文字发送后补发排队表情，保证「先文字、后图片」。"""
+        sid = str(event.get_extra("ga_pending_sticker") or "").strip()
+        if not sid:
+            return
+        event.set_extra("ga_pending_sticker", None)
+        gid = event.get_group_id()
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if not gid or call is None:
+            logger.warning("[group_activation] 排队表情无法发送：群或桥接缺失")
+            return
+        try:
+            res = await asyncio.wait_for(
+                call("sticker_send", group_id=gid, sticker_id=sid),
+                timeout=max(30.0, float(self.cfg.sticker_send_timeout)),
+            )
+            if isinstance(res, dict) and res.get("ok"):
+                event.set_extra("ga_sticker_sent", 1)
+                logger.info("[group_activation] 文字后补发表情 %s 成功", sid)
+            else:
+                logger.warning("[group_activation] 文字后补发表情 %s 失败：%s", sid, res)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[group_activation] 文字后补发表情 %s 异常：%s", sid, e)
+
+    @filter.llm_tool(name="save_sticker")
+    async def save_sticker(
+        self,
+        event: AstrMessageEvent,
+        image_id: int = 0,
+        name: str = "",
+        emotion: str = "",
+        scenes: str = "",
+        tags: str = "",
+        description: str = "",
+    ) -> str:
+        '''把本群缓存图片加入本地表情库。只在某张图确实适合当表情时调用。
+
+        先 look_image 看过内容，再给中文名、情绪、使用场景和标签；每条回复最多入库一张。
+        入库只返回文字结果，不会把图片返回给模型；入库后不需要再 look_image。
+
+        Args:
+            image_id(number): 本群图片缓存编号，如 15
+            name(string): 简短中文名，如 无语扶额
+            emotion(string): 主要情绪，如 无语/开心/震惊
+            scenes(string): 使用场景，逗号分隔，如 被问住,不想回答
+            tags(string): 搜索标签，逗号分隔，如 扶额,叹气
+            description(string): 一句话描述画面
+        '''
+        if not self._event_is_current(event):
+            return "请求已取消。"
+        gid = event.get_group_id()
+        if not gid:
+            return "当前不是群聊。"
+        try:
+            seq = int(float(str(image_id).strip().lstrip("#")))
+        except (TypeError, ValueError):
+            return "image_id 必须是数字编号。"
+        if seq <= 0:
+            return "image_id 必须是大于 0 的编号。"
+        if not str(name or "").strip():
+            return "请给表情一个中文名。"
+        saved_count = int(event.get_extra("ga_sticker_saved", 0) or 0)
+        if saved_count >= int(self.cfg.sticker_save_max_per_turn):
+            return "本轮已经入库过表情，不要连续存；先继续聊天。"
+        call = getattr(getattr(event, "bot", None), "call_action", None)
+        if call is None:
+            return "当前平台没有连接微信桥，无法写入表情库。"
+        try:
+            res = await asyncio.wait_for(
+                call(
+                    "save_sticker",
+                    group_id=gid,
+                    image_id=seq,
+                    name=str(name or ""),
+                    emotion=str(emotion or ""),
+                    scenes=str(scenes or ""),
+                    tags=str(tags or ""),
+                    description=str(description or ""),
+                ),
+                timeout=20,
+            )
+        except Exception as e:  # noqa: BLE001
+            return f"表情入库失败：{e}"
+        if not isinstance(res, dict) or not res.get("ok"):
+            return "表情入库失败：" + str((res or {}).get("error") or "桥接返回异常")
+        event.set_extra("ga_sticker_saved", saved_count + 1)
+        item = res.get("sticker") or {}
+        suffix = "（已存在，补充标签）" if item.get("duplicate") else ""
+        return (
+            f"已入库 {item.get('id')}：{item.get('name')}{suffix}。"
+            "以后可用 list_stickers 检索、send_sticker 发送。"
         )
 
     # ── 7. 调试命令 ──────────────────────────────────
