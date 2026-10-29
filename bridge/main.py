@@ -804,6 +804,16 @@ async def main() -> int:
     for g in groups:
         last_seq[g["id"]] = wx.latest_seq(g["id"])
     log.info("水位基线已对齐")
+    # 群列表回传到本机（贝蒂查群用）：后台执行，失败只记日志，不影响启动（group_sync 插件）
+    try:
+        from group_sync import push_groups
+        _all_groups = wx.groups() or []
+        asyncio.create_task(asyncio.to_thread(
+            push_groups, cfg, _all_groups or groups,
+            {g["id"] for g in groups}, wx.self_name,
+        ))
+    except Exception as e:  # noqa: BLE001
+        log.warning("[群同步] 未能启动回传: %s", e)
 
     # ── AstrBot 侧 ────────────────────────────────────
     async def _refresh_layout_after_switch(wx):
