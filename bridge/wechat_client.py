@@ -202,32 +202,6 @@ def _zstd_text(blob) -> str:
         return ""
 
 
-def _show_hidden_wechat_main() -> int:
-    """微信把主窗口隐藏到托盘时，桥扫描的是可见窗口，找不到主窗口。
-    这里把标题为「微信」、类名 Qt51514QWindowIcon 且不可见的主窗口显示出来（还原或 SHOW），返回处理的窗口数。"""
-    import ctypes
-    from ctypes import wintypes
-
-    user32 = ctypes.windll.user32
-    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    shown = []
-
-    def _cb(hwnd, _lparam):
-        if user32.IsWindowVisible(hwnd):
-            return True
-        title = ctypes.create_unicode_buffer(256)
-        cls = ctypes.create_unicode_buffer(256)
-        user32.GetWindowTextW(hwnd, title, 256)
-        user32.GetClassNameW(hwnd, cls, 256)
-        if title.value == "微信" and cls.value == "Qt51514QWindowIcon":
-            user32.ShowWindow(hwnd, 9 if user32.IsIconic(hwnd) else 5)  # SW_RESTORE / SW_SHOW
-            shown.append(int(hwnd))
-        return True
-
-    user32.EnumWindows(enum_proc(_cb), 0)
-    return len(shown)
-
-
 class WeChatClient:
     def __init__(
         self,
@@ -244,11 +218,6 @@ class WeChatClient:
         self.verify_send = verify_send
         root = db_dir or find_xwechat_root()
         self.db = WeChatDB(db_dir=str(root)) if root else WeChatDB()
-        shown = _show_hidden_wechat_main()
-        if shown:
-            log.info("[启动] 微信主窗口原为隐藏，已显示（%d 个），等待界面就绪", shown)
-            import time as _t
-            _t.sleep(2.0)
         self.gui = WeChatGUI()
         # 回读确认与消息读取共用同一份已定位的数据库。
         self.gui._cached_db = self.db
@@ -1067,47 +1036,6 @@ class WeChatClient:
         except Exception as e:  # noqa: BLE001
             log.debug("缓存输入框坐标失败: %s", e)
 
-    def _ensure_foreground(self, uia) -> bool:
-        """确认微信主窗口在前台（返回 True）；无法置前返回 False。"""
-        try:
-            if not uia.ensure_window():
-                return False
-            hwnd = uia._win.NativeWindowHandle
-            return bool(uia._force_foreground(hwnd))
-        except Exception as e:  # noqa: BLE001
-            log.warning("[发送] 置前微信窗口异常: %s", e)
-            return False
-
-    def _direct_send(self, uia, text: str) -> SendResult:
-        """直发当前会话：粘贴没落进输入框时不回车，稍等后重试，最多 3 次。
-
-        UIA 的 send_text 在回车之前回读输入框；读回不达标就返回 False 且没有按回车，
-        所以这里重试不会造成重复发送。回车阶段抛异常也会返回 False，这种情况极少，
-        会被当作未发送重试一次（日志里能看到）。
-        """
-        import time as _t
-        attempts = 3
-        for n in range(1, attempts + 1):
-            # 按键（Ctrl+A/Delete/V/Enter）发给前台窗口。微信不在前台时按键会打到别的窗口，
-            # 所以每次粘贴前先确认微信已置前；做不到就不发任何按键。
-            if not self._ensure_foreground(uia):
-                log.warning("[发送] 第 %d/%d 次：微信窗口无法置前，未发送任何按键", n, attempts)
-                if n < attempts:
-                    _t.sleep(1.5 * n)
-                    continue
-                return SendResult("failed", "微信窗口无法置前，未发送（可安全重试）")
-            if uia.send_text(text):
-                if n > 1:
-                    log.info("[发送] 第 %d 次尝试成功", n)
-                return SendResult("sent")
-            log.warning(
-                "[发送] 第 %d/%d 次粘贴未落进输入框（未回车）%s",
-                n, attempts, "，稍后重试" if n < attempts else "，放弃",
-            )
-            if n < attempts:
-                _t.sleep(1.5 * n)
-        return SendResult("failed", "粘贴未落进输入框，已重试 3 次，均未回车（可安全重试）")
-
     def send_text(self, group_name: str, text: str) -> SendResult:
         """发送文本。**已在目标会话时直接发送，绝不查找 / 切换会话。**
 
@@ -1140,9 +1068,12 @@ class WeChatClient:
             if same and uia is not None and (not self.verify_send or can_confirm):
                 # 当前会话直发，确认也不切换会话。False可能发生于回车阶段。
                 mark = self.gui._send_watermark(group_name) if self.verify_send else None
-                ok = self._direct_send(uia, text)
-                if ok and self.verify_send:
+                if not uia.send_text(text):
+                    ok = SendResult("unknown", "UIA未确认发送结果，已停止自动重发")
+                elif self.verify_send:
                     ok = self._confirm_delivery([text], group_name, mark, "exact")
+                else:
+                    ok = SendResult("sent")
             else:
                 ok = SendResult.from_gui(self.gui.send_msg(text, group_name, self.verify_send))
         except Exception as e:  # noqa: BLE001
