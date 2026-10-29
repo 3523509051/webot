@@ -1,0 +1,4 @@
+name: astrbot_plugin_betty
+desc: 贝蒂语音助手联动（Task 3 spike）：贝蒂平台的回复改由 betty_reply 动作回送，附带 turn_id
+author: webot
+version: 0.0.1

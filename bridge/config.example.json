@@ -31,5 +31,10 @@
   },
   "logging": {
     "level": "INFO"
+  },
+  "group_sync": {
+    "enabled": false,
+    "url": "http://YOUR_TAILSCALE_IP:8765/api/admin/groups/sync",
+    "token": "SAME_AS_BETTY_GUI_TOKEN_IN_betty-server/.env"
   }
 }

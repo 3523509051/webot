@@ -30,7 +30,11 @@ services:
       - no-new-privileges:true
     ports:
       - "${ASTRBOT_WEB_PORT:-6185}:6185"   # WebUI 管理面板
-      - "${ONEBOT_WS_PORT:-6199}:6199"     # OneBot v11 反向 WS（桥连这里）
+      - "${ONEBOT_WS_PORT:-6199}:6199"     # OneBot v11 反向 WS（微信桥连这里）
+      # 贝蒂专用 OneBot 反向 WS（Task 3）：宿主机 6201 → 容器 6200。
+      # 宿主机 6200 已被微信桥占用（bridge/config.json ws_url），不要改用 6200。
+      # 目前只绑定本机回环；跨机使用 Tailscale 时把 127.0.0.1 改为服务器的 tailscale IP。
+      - "127.0.0.1:6201:6200"
     environment:
       - TZ=Asia/Shanghai
       - AMAP_WEB_KEY=${AMAP_WEB_KEY:-}
