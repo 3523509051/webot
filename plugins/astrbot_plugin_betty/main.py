@@ -27,6 +27,32 @@ BETTY_GROUPS = {
     "测试群": "default:GroupMessage:18491516",
 }
 
+GROUP_ACTIVATION_NAME = "astrbot_plugin_group_activation"
+BOT_NAME = "大肥鱼"  # 写回 L1 时的发言人（与群里机器人昵称一致，名字判定才能对上）
+
+
+def _plain_text(tool_args) -> str:
+    return " ".join(
+        str(m.get("text", "")) for m in (tool_args or {}).get("messages", [])
+        if isinstance(m, dict) and m.get("type") == "plain"
+    ).strip()
+
+
+def _tool_result_text(tool_result) -> str:
+    parts = []
+    for c in getattr(tool_result, "content", None) or []:
+        t = getattr(c, "text", None)
+        if t:
+            parts.append(str(t))
+    return " ".join(parts).strip()
+
+
+def _group_activation(context):
+    meta = context.get_registered_star(GROUP_ACTIVATION_NAME)
+    plugin = getattr(meta, "star_cls", None) if meta else None
+    return plugin if plugin is not None and hasattr(plugin, "wm") else None
+
+
 _HEADER = re.compile(r"^\[贝蒂转达\|group=([^\]]+)\]\s*\n?", re.MULTILINE)
 
 
@@ -83,13 +109,43 @@ class BettyBridge(star.Star):
         if expected is None or target != expected:
             logger.warning(f"[betty] ⚠️ send_message_to_user 目标与允许的群不符: "
                            f"expected={expected} actual={target!r}")
-        text = " ".join(
-            str(m.get("text", "")) for m in (tool_args or {}).get("messages", [])
-            if isinstance(m, dict) and m.get("type") == "plain"
-        )
+        text = _plain_text(tool_args)
         event.set_extra("betty_sent_text", text)
         event.set_extra("betty_sent_target", target)
         logger.info(f"[betty] 大肥鱼发送 → {target} len={len(text)}")
+
+    @filter.on_llm_tool_respond()
+    async def write_back_l1(self, event: AstrMessageEvent, tool, tool_args, tool_result):
+        """发送成功后，把实际发出的内容写回目标群的 L1。
+
+        桥会把机器人自己发的消息当回声丢掉，不写回的话，群里有人接着问
+        “刚才说的会几点？”时，大肥鱼的 L1 里没有这句话，接不上。
+        只写大肥鱼实际发出的措辞；贝蒂的请求原文不进群记忆。
+        """
+        if event.get_platform_id() != BETTY_PLATFORM_ID:
+            return
+        if getattr(tool, "name", "") != SEND_TOOL:
+            return
+        result_text = _tool_result_text(tool_result)
+        if getattr(tool_result, "isError", False) or result_text.lower().startswith("error"):
+            logger.warning(f"[betty] 发送失败，不写回 L1: {result_text[:120]}")
+            event.set_extra("betty_send_error", result_text[:200])
+            return
+        target = str((tool_args or {}).get("session") or "")
+        if target != event.get_extra("betty_session"):
+            logger.warning(f"[betty] 发送目标不是本轮允许的群，不写回 L1: {target!r}")
+            return
+        text = _plain_text(tool_args)
+        gid = target.rsplit(":", 1)[-1]
+        plugin = _group_activation(self.context)
+        if plugin is None or not text or not gid:
+            logger.warning(f"[betty] 无法写回 L1（plugin={plugin is not None}, gid={gid!r}）")
+            return
+        import time as _t
+        plugin.wm.push_l1(gid, {"user": BOT_NAME, "text": f"（代贝蒂转达）{text}",
+                                "ts": _t.time(), "at": False})
+        event.set_extra("betty_l1_written", True)
+        logger.info(f"[betty] 已写回群 {gid} 的 L1（{len(text)} 字），当前 L1 {len(plugin.wm.state(gid).l1)} 条")
 
     @filter.on_decorating_result()
     async def reply_to_betty(self, event: AstrMessageEvent):
@@ -100,8 +156,13 @@ class BettyBridge(star.Star):
             return
         body = result.get_plain_text().strip()
         err = event.get_extra("betty_error")
+        send_err = event.get_extra("betty_send_error")
         if err:
             body = f"传话失败：{err}"
+        elif send_err:
+            body = f"传话失败：发送没有成功（{send_err}）"
+        elif event.get_extra("betty_l1_written") and body:
+            body = f"{body}\n[实际发出] {event.get_extra('betty_sent_text')}"
         elif not body:
             sent = event.get_extra("betty_sent_text")
             if sent is None:
