@@ -11,6 +11,8 @@
 不替换大肥鱼的默认人格。群聊路由（astrbot_plugin_group_activation）不受影响，它只处理 default 平台。
 """
 import re
+import time
+import uuid
 
 from astrbot.api import logger, star
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter
@@ -29,6 +31,15 @@ BETTY_GROUPS = {
 
 GROUP_ACTIVATION_NAME = "astrbot_plugin_group_activation"
 BOT_NAME = "大肥鱼"  # 写回 L1 时的发言人（与群里机器人昵称一致，名字判定才能对上）
+
+# 群 → 贝蒂（notify_betty）。白名单按发送者的 OneBot 用户 ID 判定。
+# 216785116 = 主人（微信昵称 NONE）。要加人，在这里追加 ID。
+NOTIFY_WHITELIST = {"216785116"}
+NOTIFY_HOURLY_LIMIT = 6        # 每小时最多通知贝蒂的次数（所有人合计）
+NOTIFY_TTL = 1800              # 秒；贝蒂超过这个时间还没转述就丢弃
+NOTIFY_MAX_CHARS = 200
+GROUP_NAMES = {"18491516": "测试群"}  # 群 ID → 贝蒂里使用的群名（与 BETTY_GROUPS 一致）
+_notify_times: list[float] = []  # 最近一小时的通知时间戳（进程内）
 
 
 def _plain_text(tool_args) -> str:
@@ -173,6 +184,56 @@ class BettyBridge(star.Star):
             body = f"已发出：{sent}" if sent else "没有发出内容。"
         await self._reply(event, body)
         event.clear_result()
+
+    def _betty_bot(self):
+        """取 betty 平台的 aiocqhttp client（用来给贝蒂发 betty_notify）。不在线返回 None。"""
+        for inst in getattr(self.context.platform_manager, "platform_insts", None) or []:
+            try:
+                if inst.meta().id == BETTY_PLATFORM_ID:
+                    return inst.get_client()
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    @filter.llm_tool(name="notify_betty")
+    async def notify_betty(self, event: AstrMessageEvent, text: str, urgency: str = "normal") -> str:
+        '''让贝蒂（主人的语音助手）转告主人一句话。只有主人和白名单成员在群里 @大肥鱼 时才能用。
+        Args:
+            text(string): 要转告的内容，保留原话中的时间、数字、人名，不超过200字
+            urgency(string): normal 或 urgent
+        '''
+        gid = str(event.get_group_id() or "")
+        if not gid:
+            return "这个工具只能在群里用。"
+        sender = str(event.get_sender_id() or "")
+        if sender not in NOTIFY_WHITELIST:
+            return "只有主人和白名单里的人能让贝蒂开口，请回复对方：这事我不能替你去办。"
+        text = str(text or "").strip()
+        if not text or len(text) > NOTIFY_MAX_CHARS:
+            return "内容为空或超过200字，请精简后再调用。"
+        now = time.time()
+        _notify_times[:] = [t for t in _notify_times if now - t < 3600]
+        if len(_notify_times) >= NOTIFY_HOURLY_LIMIT:
+            return "这一小时已经通知贝蒂很多次了，请稍后再说。"
+        bot = self._betty_bot()
+        if bot is None:
+            return "贝蒂现在不在线，没能通知。"
+        payload = {
+            "msg_id": uuid.uuid4().hex,
+            "from": str(event.get_sender_name() or sender),
+            "group": GROUP_NAMES.get(gid, gid),
+            "text": text,
+            "urgency": "urgent" if urgency == "urgent" else "normal",
+            "ttl": NOTIFY_TTL,
+        }
+        try:
+            await bot.call_action("betty_notify", **payload)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[betty] betty_notify 失败: {e}")
+            return f"通知贝蒂失败：{e}"
+        _notify_times.append(now)
+        logger.info(f"[betty] 已通知贝蒂 msg_id={payload['msg_id']} from={payload['from']} len={len(text)}")
+        return "已交给贝蒂，她会转告主人。"
 
     async def _reply(self, event: AstrMessageEvent, text: str) -> None:
         turn_id_raw = event.message_obj.message_id
