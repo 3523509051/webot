@@ -1100,8 +1100,9 @@ async def main() -> int:
                         "sent_text": False,
                         "sticker_id": item["id"],
                     }
+                # 紧跟文字发图：坐标刚由 send_text 缓存，跳过重复探测省 0.2–0.5 秒
                 image_result = await asyncio.to_thread(
-                    wx.send_image, name, item["path"]
+                    lambda: wx.send_image(name, item["path"], probe=False)
                 )
                 if not image_result:
                     return {

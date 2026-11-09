@@ -869,11 +869,13 @@ class WeChatClient:
             if not copied:
                 log.info("[发图] fast-paste 失败：剪贴板写入被占用（%s）", Path(path).name)
                 return False
-            time.sleep(0.25)
+            # 2026-11-09 提速：固定等待从 0.25/2.0/0.8 压缩到 0.1/1.2/0.15。
+            # 草稿检测是轮询，检测到就立即返回，wait 只是上限，不影响可靠性。
+            time.sleep(0.1)
             self.gui._input.key(VK_A, ctrl=True)
             self.gui._input.key(VK_DELETE)
             self.gui._input.key(VK_V, ctrl=True)
-            draft = self.gui._input_box_has_color_draft(box, wait=2.0)
+            draft = self.gui._input_box_has_color_draft(box, wait=1.2)
             if not draft:
                 # 有些微信版本/灰度图不会出现“彩色缩略图”，但图片草稿会把
                 # 输入框撑高，导致输入框探测失败 —— 用这个信号兜底判断。
@@ -882,19 +884,23 @@ class WeChatClient:
                 except Exception:  # noqa: BLE001
                     draft = False
             if not draft:
-                log.info("[发图] fast-paste 失败：2s 内未检测到草稿（box=%s）", box)
+                log.info("[发图] fast-paste 失败：1.2s 内未检测到草稿（box=%s）", box)
                 return False
             rhythm.gate("send")
             self.gui._input.key(VK_RETURN)
-            rhythm.nap(0.8)
+            rhythm.nap(0.15)
             return True
         except Exception as e:  # noqa: BLE001
             log.warning("[发图] fast-paste 异常: %s", e)
             return False
 
     def send_image(self, group_name: str, path: str,
-                   verify: bool | None = None) -> SendResult:
-        """发送本地图片/GIF（微信图片气泡，不是真正的 sticker 消息）。"""
+                   verify: bool | None = None, probe: bool = True) -> SendResult:
+        """发送本地图片/GIF（微信图片气泡，不是真正的 sticker 消息）。
+
+        ``probe=False``：紧跟在文字之后发图时使用。输入框坐标刚由 ``send_text``
+        缓存并验证过，再做一次 ``_probe_input_box`` 只是白花 0.2–0.5 秒（2026-11-09）。
+        """
         p = Path(path)
         if not p.is_file() or p.stat().st_size <= 0:
             return SendResult("failed", f"图片不存在：{path}")
@@ -921,8 +927,9 @@ class WeChatClient:
                         box = self.gui.get_input_box()
                     # 缓存只用于省掉完整探测；窗口移动/布局漂移后坐标会失效，
                     # 发图前做一次轻量探测校正，避免带着旧坐标掉进 3×6s 慢路径。
+                    # probe=False（紧跟文字发图）时跳过：坐标刚被 send_text 缓存。
                     try:
-                        fresh = self.gui._probe_input_box()
+                        fresh = self.gui._probe_input_box() if probe else None
                     except Exception:  # noqa: BLE001
                         fresh = None
                     if fresh and fresh != box:
@@ -989,13 +996,20 @@ class WeChatClient:
     def send_text_and_image(
         self, group_name: str, text: str, path: str
     ) -> dict:
-        """先发文字，再在同一会话发图片（给回复标记用）。"""
+        """先发文字，再在同一会话发图片（给回复标记用）。
+
+        2026-11-09 提速：图片走 ``probe=False``（坐标刚缓存过），并记录分段耗时，
+        便于确认「文字→图」的间隔到底花在哪一段。
+        """
         body = str(text or "").strip()
         sent_text = False
+        text_ms = 0
         if body:
             # 文字点击是前台操作；微信被挡住时 SendKeys 会打到别的窗口。
             self.ensure_visible()
+            t_text = time.time()
             result = self.send_text(group_name, body)
+            text_ms = int((time.time() - t_text) * 1000)
             # unknown 也按“可能已发出”处理，避免插件把同一段文字再发一次。
             sent_text = result.state in ("sent", "unknown")
             if not sent_text:
@@ -1004,13 +1018,19 @@ class WeChatClient:
                     "sent_text": False,
                     "error": f"文字发送失败：{result.detail or result.state}",
                 }
-        image_result = self.send_image(group_name, path)
+        t_img = time.time()
+        image_result = self.send_image(group_name, path, probe=False)
+        img_ms = int((time.time() - t_img) * 1000)
         if not image_result:
             return {
                 "ok": False,
                 "sent_text": sent_text,
                 "error": f"图片发送失败：{image_result.detail or image_result.state}",
             }
+        log.info(
+            "[表情计时] 文字 %dms + 图片 %dms（%s）",
+            text_ms, img_ms, Path(path).name,
+        )
         return {
             "ok": True,
             "sent_text": sent_text,
