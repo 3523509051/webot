@@ -178,8 +178,8 @@ class GroupActivationPlugin(star.Star):
         # 「先发图、再问这是什么」：key="群:发送者" -> (图片引用, 时间)。
         # 图片只在它自己那条事件里会送给模型，后一条纯文字消息得靠这里补挂（见 inject_memory）。
         self._last_image: dict[str, tuple[list[str], float]] = {}
-        # 独立表情：standalone 模式下后台发图，避免阻塞最终回复。
-        self._sticker_tasks: set[asyncio.Task] = set()
+        # 表情发送已改为「正文末尾 [[表情:编号]] 标记」，由 on_decorating_result 一次发出，
+        # 不再走 LLM toolcall（toolcall 会多一轮模型请求，群里表现为发完表情又补一句）。
         # 本群完整成员名单（桥的 get_group_member_list），gid -> names / 拉取时间。
         # 不能只靠 L1/L3：清空记忆后模型会不知道没发过言的人，也就不会 @ 他。
         self._group_members: dict[str, list[str]] = {}
@@ -1656,24 +1656,28 @@ class GroupActivationPlugin(star.Star):
                 "（高德天气/地图功能当前关闭：amap_* 工具都不可用，有人问天气时如实说明你暂时查不了实时天气。）"
             )
         parts.append(
-            ("本地表情库：清单已随本条给出（编号 名字），直接用 send_sticker(sticker_id=编号) 发，"
-             "不要再调 list_stickers 重复列一遍。"
-             if catalog else
-             "本地表情库：清单太长没随本条给出，想发表情时先 list_stickers 看「编号 名字」，"
-             "挑好后 send_sticker(sticker_id=编号)。")
+            "# 发本地表情的方法（重要：不是工具调用）\n"
+            "你手里没有 send_sticker 这个工具。要发表情，就在**这一条回复正文的最后**写一个标记：\n"
+            "  [[表情:编号]]\n"
+            "插件会在文字发出后自动补这张图，全程只消耗一次模型请求。\n"
+            "规则：\n"
+            "1. 标记只能出现在整条回复的**最末尾**，一条回复最多 1 个；正文写你正常想说的话。\n"
+            "2. 想只发表情、不说话：正文只写标记即可（插件会补一句极简语气词兜底）。\n"
+            "3. 编号必须来自清单里真实存在的编号；不确定就别发，不要编编号。\n"
+            "4. **不要**调用 send_sticker（已不存在），也不要为了发表情去 look_image 看图 —— 名字已经说明画面内容。\n"
+            + ("清单已随本条给出（编号 名字），直接挑，不要再调 list_stickers 重复列一遍。\n"
+               if catalog else
+               "清单太长没随本条给出；确实想发表情时，先 list_stickers 看「编号 名字」再写标记。\n")
             + "名字就是画面内容 + 情绪，挑最贴合当前语气的那张；刚才发过的名字在历史里，别连着发同一张。"
-            "表情库里**没有你本人的图**：你本人是蓝鲸女仆娘，从没出过镜。只有几张\n"
-            "「蓝发女仆」的图气质跟你接近，可以当**替身**用。被问「有你自己表情包吗」时，\n"
-            "老实说本人没出镜、只有替身，然后发一张蓝发女仆那种；别把琪露诺或其他角色说成你，\n"
+            "表情库里**没有你本人的图**：你本人是蓝鲸女仆娘，从没出过镜。只有几张"
+            "「蓝发女仆」的图气质跟你接近，可以当**替身**用。被问「有你自己表情包吗」时，"
+            "老实说本人没出镜、只有替身，然后发一张蓝发女仆那种；别把琪露诺或其他角色说成你，"
             "也别回「我一张表情包都没有」——替身也是能发的。"
-            "发表情不需要 look_image，也不要为了挑表情去看图 —— 名字已经说明内容。"
             "你现在不会自动收录群友的图；只有你明确调用 save_sticker 才会入库，那一步才需要先 look_image 看一眼。"
-            "send_sticker 默认排在文字之后补图（先正常写正文，插件会补图）；只想发图不写字时才用 standalone=true。"
             "群友说某张「别发这张 / 太丑了 / 换一个」时，用 "
             "rename_sticker(sticker_id=编号, add_tags=\"不要发\") 禁掉它，之后它就既进不了列表也发不出去；"
             "说「少发点」就加「少发」，它只会排到列表最后。"
-            "每条回复最多发 1 张、入库 1 张，不要刷屏；send_sticker / save_sticker "
-            "不会把图片返回给你，发送或入库后不要再 look_image 看同一张。"
+            "每条回复最多发 1 张、入库 1 张，不要刷屏；save_sticker 不会把图片返回给你，入库后不要再 look_image 看同一张。"
         )
         parts.append("文件库：群友发来的 md/c/cpp 等文本或代码文件会记成 [文件 #f_...]；"
                      "需要时用 list_files 找编号、read_file 按需读取，不要一次读多个。"
@@ -1911,8 +1915,6 @@ class GroupActivationPlugin(star.Star):
     @filter.on_decorating_result()
     async def send_text_sticker_marker(self, event: AstrMessageEvent) -> None:
         """解析回复末尾的 [[表情:...]]，让桥先发文字再发图，只消耗一次模型 API。"""
-        if event.get_extra("ga_sticker_only", False):
-            return
         result = event.get_result()
         if result is None or not result.chain:
             return
@@ -1965,6 +1967,12 @@ class GroupActivationPlugin(star.Star):
             return
         if isinstance(res, dict) and res.get("ok"):
             event.clear_result()
+            # 结果被清空后，decide_participation 拿不到正文；这里直接补记「刚说过的话」，
+            # 否则 L2 流水缺这句、模型下一轮不记得自己发过哪张（2026-11-09）。
+            said = raw.strip()[:1000]
+            if said:
+                event.set_extra("ga_reply_text", said)
+                self._last_reply[gid] = said[:500]
             logger.info(
                 "[group_activation] 文字+表情已发送（%s，文字=%s）",
                 res.get("sticker_id"),
@@ -2115,10 +2123,6 @@ class GroupActivationPlugin(star.Star):
         若改成「插件先调一次 LLM 判定」，每次接话都会多约 1.2 秒。
         """
         if not self._event_is_current(event):
-            event.clear_result()
-            return
-        # standalone 表情：工具已在后台发图，最终文字全部丢弃，避免“表情+解释”。
-        if event.get_extra("ga_sticker_only", False):
             event.clear_result()
             return
         if not self.cfg.llm_decides_participation:
@@ -3407,7 +3411,7 @@ class GroupActivationPlugin(star.Star):
         '''列出本地表情库（编号 + 名字）。**通常不需要调用** —— 清单已随每条请求给出。
 
         只有两种情况才用：① 清单太长没被注入（会提示你）；② 想按情绪/关键词筛一小批。
-        发表情直接 send_sticker(sticker_id=编号)，不需要先查、更不需要看图。
+        发表情在回复最末尾写 [[表情:编号]]，不需要先查、更不需要看图。
 
         Args:
             query(string): 可选关键词，匹配名字/描述/标签
@@ -3455,65 +3459,7 @@ class GroupActivationPlugin(star.Star):
         return (
             "本地表情库（编号 名字）：\n"
             + "\n".join(lines)
-            + "\n挑好就用 send_sticker(sticker_id=编号)。同一张不要连着发。"
-        )
-
-    @filter.llm_tool(name="send_sticker")
-    async def send_sticker(
-        self, event: AstrMessageEvent, sticker_id: str = "", standalone: bool = False
-    ) -> str:
-        '''发送本地表情。默认排队到文字后补图；standalone=true 时单独发表情、不写文字。
-
-        图片由桥直接发到微信，不会返回给模型；发送后不需要再 look_image。
-        表情本身比文字更有冲击力、或用户只想要一个反应时，用 standalone=true。
-
-        Args:
-            sticker_id(string): list_stickers 返回的 id，如 st_0001
-            standalone(boolean): true=只发这张表情，不配文字；false=文字发送后补图
-        '''
-        if not self._event_is_current(event):
-            return "请求已取消。"
-        gid = event.get_group_id()
-        if not gid:
-            return "当前不是群聊。"
-        sid = str(sticker_id or "").strip().lstrip("#")
-        if not sid:
-            return "sticker_id 不能为空。"
-        used = int(event.get_extra("ga_sticker_sent", 0) or 0)
-        queued = event.get_extra("ga_pending_sticker")
-        if queued or used >= int(self.cfg.sticker_send_max_per_turn):
-            return "本轮已经安排过表情，不要连续刷屏；用文字继续。"
-        call = getattr(getattr(event, "bot", None), "call_action", None)
-        if call is None:
-            return "当前平台没有连接微信桥，无法发送表情。"
-        # 顺手取一次名字：返回值里带上，历史里就能看出「刚发的是哪一张」，
-        # 下一轮不会再挑同一张（2026-11-08）。
-        label = f"#{sid}"
-        try:
-            info = await call("list_stickers", limit=60)
-            for it in (info or {}).get("items") or []:
-                if str(it.get("id") or "") == sid:
-                    label = f"#{sid}「{it.get('name') or ''}」"
-                    break
-        except Exception:  # noqa: BLE001
-            pass
-        if standalone:
-            # 单独表情：后台发图，最终文字由 on_decorating_result 清空。
-            event.set_extra("ga_sticker_only", True)
-            event.set_extra("ga_sticker_sent", 1)
-            task = asyncio.create_task(
-                self._send_sticker_background(call, gid, sid)
-            )
-            self._sticker_tasks.add(task)
-            task.add_done_callback(self._sticker_tasks.discard)
-            return (
-                f"已安排单独表情 {label}，不要写任何文字；图片会在后台发出。"
-                "不要 look_image，也不要再发一条表情。"
-            )
-        event.set_extra("ga_pending_sticker", sid)
-        return (
-            f"已排队表情 {label}：先把文字回复正常发出去，插件会在文字发送后补图。"
-            "不要再用 look_image，也不要转发表情。"
+            + "\n挑好后在回复最末尾写 [[表情:编号]]，由插件随文字一起发。同一张不要连着发。"
         )
 
     @filter.llm_tool(name="rename_sticker")
@@ -3575,43 +3521,6 @@ class GroupActivationPlugin(star.Star):
         tags = "、".join(item.get("tags") or []) or "-"
         return f"已更新 {item.get('id')}：名字「{item.get('name')}」，标签：{tags}。"
 
-    async def _send_sticker_background(self, call, gid: str, sid: str) -> None:
-        try:
-            res = await asyncio.wait_for(
-                call("sticker_send", group_id=gid, sticker_id=sid),
-                timeout=max(30.0, float(self.cfg.sticker_send_timeout)),
-            )
-            if isinstance(res, dict) and res.get("ok"):
-                logger.info("[group_activation] 单独表情 %s 发送成功", sid)
-            else:
-                logger.warning("[group_activation] 单独表情 %s 发送失败：%s", sid, res)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[group_activation] 单独表情 %s 异常：%s", sid, e)
-
-    @filter.after_message_sent()
-    async def send_pending_sticker(self, event: AstrMessageEvent) -> None:
-        """文字发送后补发排队表情，保证「先文字、后图片」。"""
-        sid = str(event.get_extra("ga_pending_sticker") or "").strip()
-        if not sid:
-            return
-        event.set_extra("ga_pending_sticker", None)
-        gid = event.get_group_id()
-        call = getattr(getattr(event, "bot", None), "call_action", None)
-        if not gid or call is None:
-            logger.warning("[group_activation] 排队表情无法发送：群或桥接缺失")
-            return
-        try:
-            res = await asyncio.wait_for(
-                call("sticker_send", group_id=gid, sticker_id=sid),
-                timeout=max(30.0, float(self.cfg.sticker_send_timeout)),
-            )
-            if isinstance(res, dict) and res.get("ok"):
-                event.set_extra("ga_sticker_sent", 1)
-                logger.info("[group_activation] 文字后补发表情 %s 成功", sid)
-            else:
-                logger.warning("[group_activation] 文字后补发表情 %s 失败：%s", sid, res)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[group_activation] 文字后补发表情 %s 异常：%s", sid, e)
 
     @filter.llm_tool(name="save_sticker")
     async def save_sticker(
@@ -3679,7 +3588,7 @@ class GroupActivationPlugin(star.Star):
         suffix = "（已存在，补充标签）" if item.get("duplicate") else ""
         return (
             f"已入库 {item.get('id')}：{item.get('name')}{suffix}。"
-            "以后可用 list_stickers 检索、send_sticker 发送。"
+            "以后可用 list_stickers 检索，在回复末尾写 [[表情:编号]] 就能发。"
         )
 
     # ── 6.3 文件库：AI 按需读取，不把文件内容塞进记忆 ─────

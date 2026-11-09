@@ -67,6 +67,7 @@
 - v0.20.2 记忆四工具（触发规则随提示词注入）：`look_profile`（查 L3 群员画像，先 `look_profile()` 列名单再按名查人，最多 3 人 12 条）、`kb_search`（按需查 L4 群知识库）、`remember`（模型自主判断写入，每轮最多 1 条，**无自动提炼兜底**，防循环浪费）、`recall`（关键词本地匹配检索全部 500 条流水，零 LLM 成本）。规则：问题指向具体人 → 先 `look_profile`；指向群规/约定/结论 → 先 `kb_search`。
 - v0.20.2 高德放开授权：`amap_weather` / `amap_places` / `amap_route` 移除 `requester_id` 批次名单校验（模型想调就调），只剩 `amap_enable` 开关、日额度与批次存活三道门槛；追问（"那明天呢"）天然放行。
 - v0.20.2 天气前置（`weather_fast_enable=true`）：检测到天气字样时，先用**只带 L1 背景**的小模型提取 `{"city","forecast"}` 并直查高德，把数据交回主模型润色（人格语气统一）；缺城市时参考小模型给出的反问句；任一步失败返回空，主模型自带 `amap_weather` 工具兜底，不影响主流程。小模型超时 10 秒、高德 15 秒。
+- v0.20.2 表情改标记、发图提速：删除 `send_sticker` LLM 工具（toolcall 必然多一轮模型请求，群里会「说完话→发图→又补一句」），改为模型在正文末尾写 `[[表情:st_0009]]`，插件经桥 `text_sticker` 一次发出「文字 + 图片」，一轮只调一次模型。桥侧同步压缩发图等待：加 `probe=False` 跳过输入框重复探测、剪贴板等待 250→100ms、草稿检测上限 2000→1200ms（轮询，命中即返回）、回车后等待 800→150ms。日志新增 `[表情计时] 文字 xxxms + 图片 xxxms` 便于定位瓶颈。
 - v0.20.0 本地文件库：`D:\webot\files` 保存文本/代码文件和 `index.json`；收到文件只记 `[文件 #f_0001]`，不把内容塞进 L1/L2。AI 需要时用 `list_files` 找编号、`read_file` 读取（默认 12000 字，最大 20000）。`.bat`、`.exe`、`.ps1`、压缩包等拒收；单文件上限 5MB。
 - v0.20.0 微信链接：链接卡片带完整 URL，AI 用 `read_website` 按需读取；`mp.weixin.qq.com` 专用解析 `#js_content`；引用链接解析 `<refermsg>` 的完整 `<url>`，不截断。
 - v0.19.0 本地表情库：`D:\webot\stickers` 保存图片与 `index.json`；`list_stickers` 按情绪/场景/关键词检索，`send_sticker` 用 `gui.send_image` 发图片气泡，`save_sticker` 把本群缓存图片正式入库并让 AI 命名、打标签。每条回复最多发 1 张、入库 1 张；同图 sha256 去重，不覆盖不删除。
@@ -614,9 +615,9 @@ D:\webot\stickers\
 - 仓库自带 `stickers/default/` 的 **24 张默认表情**；新设备/空运行时库首次启动自动播种到 `stickers/files + index.json`，已有本地库不覆盖；
 - **文字 + 表情（推荐）**：模型在最终回复末尾写 `[[表情:无语]]` 或 `[[表情:st_0006]]`；插件解析标记，调用桥的 `text_sticker` 在一个动作里先发文字再发图，只消耗**一次模型 API**，且顺序固定文字→图片；
 - 标记必须放在**完整正文**末尾；不能只写 @ 或只写标记，否则插件/桥会自动补一句兜底正文，避免空 @；
-- `text_sticker` 含 @ 时会走真实 @ 再发图；发图复用文字发送后的输入框缓存并优先 fast-paste，但仍受微信 UIA 粘贴/检测时间限制；
+- `text_sticker` 含 @ 时会走真实 @ 再发图；发图复用文字发送后的输入框缓存并走 `probe=False` 快速路径（跳过输入框重复探测）；
+- **表情不是 LLM toolcall**：`send_sticker` 工具已移除（2026-11-09）。toolcall 会让框架在工具结果后再请求一次模型，群里表现为「一段话 + 图 + 又一段话」；现在只有正文末尾的 `[[表情:编号]]` 标记，插件解析后一次发出，一轮只消耗一次模型请求；
 - 机器人自己发出的图片会被桥识别为回声并丢弃，不会重新进 L1/视觉；
-- `send_sticker(sticker_id, standalone=false)`：默认把表情排队，等文字发送后补图；`standalone=true` 时只发这一张表情、丢弃最终文字，适合“用一个表情表达看法”；桥用 `gui.send_image` 发**图片气泡**，不是微信 sticker 消息；
 - `save_sticker(image_id, name, emotion, scenes, tags, description)`：把本群缓存图正式入库，AI 命名/打标签；同图 sha256 去重，不覆盖不删除；
 - 每条回复最多发 1 张、入库 1 张（`sticker_send_max_per_turn` / `sticker_save_max_per_turn`）；
 - 图片和 `index.json` 不进 Git，详见 [stickers/README.md](stickers/README.md)。
