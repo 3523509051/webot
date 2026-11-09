@@ -30,6 +30,9 @@ class PluginConfig:
     record_l1: bool = True              # 是否常驻记录 L1 群聊滚动背景
     inject_l1: bool = True              # 是否把 L1 注入默认 LLM 请求
     l1_size: int = 10                   # L1 保留条数（2026-10-08 由 25 调小，压上下文 token）
+    # L10：滚动背景的**物理深度**（2026-11-08）。队列按这个长度存，看图选择器在里面
+    # 翻最近的图片编号；注入主模型时仍只取最近 l1_size 条，所以不会多花 token。
+    l10_size: int = 60
     local_routing: bool = True          # 先本地筛掉无关消息，再决定是否调用模型
     history_max_turns: int = 8          # 每次请求携带的 L2 最近轮数
     history_max_chars: int = 12000      # L2 粗略字符预算（不是精确 token）
@@ -121,23 +124,39 @@ class PluginConfig:
 
     amap_enable: bool = True
     amap_daily_limit: int = 100   # 每次地点搜索和每段路线各计一次
+    weather_fast_enable: bool = True  # 天气前置：小模型先提取城市并代查高德，主模型只润色
     website_enable: bool = True
     website_daily_limit: int = 300
     website_moderation_timeout: float = 15.0
 
     # ── L3 长期记忆（结构化「群员画像」）──────────────
     l3_enable: bool = True
+    # 是否在窗口休眠后自动提炼 L3/L4。默认关（2026-11-08 用户要求）：
+    # 改由模型自己调 remember 工具决定记什么，避免每轮/每次休眠都花一次调用，
+    # 也避免「提炼 → 写库 → 又触发提炼」这类循环浪费。
+    l3_auto_extract: bool = False
+    # 是否把群员画像塞进每一轮请求。默认关（2026-11-08）：L3 只回答
+    # 「这个人是谁 / 你都记得谁」，靠 look_profile 按需查，不占日常 token。
+    l3_inject: bool = False
     l3_min_new_messages: int = 5        # 窗口内至少积累这么多条消息才值得提炼
     l3_cooldown_seconds: float = 300.0  # 同一群两次提炼的最小间隔（防频繁调 LLM）
     l3_max_members: int = 8             # 注入时最多带几个成员
     l3_max_facts_per_member: int = 4    # 注入时每人最多几条
+    l3_focus_facts: int = 6             # 「@ 它的人」单独给几条（比其他人多两条）
+    # look_profile 工具（按需补看某个成员的全部画像）
+    look_profile_max: int = 12          # 每人最多返回几条事实
+    look_profile_max_people: int = 3    # 一次最多查几个人（防刷屏）
     l3_facts_cap_per_member: int = 12   # 存储时每人最多保留几条（超出丢最久未提及的）
     # 写入前的**语义去重**：与本人已有事实相似度 ≥ 阈值就跳过。
     # 为什么需要：add_facts 只按文本精确匹配去重，换个说法就重复入库
     # （实测「会搓工具传GitHub」与「会写代码愿分享到GitHub」并存）。
     l3_dedup_enable: bool = True
     l3_dedup_score: float = 0.90        # 与 L4 查重同一套自算余弦
-    l3_header: str = "# 你记得的这个群的人（长期记忆，仅供参考，不要逐条复述）"
+    l3_header: str = (
+        "# 你记得的这个群的人（长期记忆，仅供参考，不要逐条复述）\n"
+        "# 这里只是最活跃的几位。被问「你都记得谁 / 列出群友 / 有哪些人」时，"
+        "必须调用 look_profile() 拿完整名单，不要只报这几个人"
+    )
     l3_extract_prompt: str = (
         "# 任务\n"
         "从下面的群聊记录中提炼**关于群成员的、长期有效的事实**，供以后记住这些人。\n\n"
@@ -162,14 +181,16 @@ class PluginConfig:
     kb_embedding_provider_id: str = "ollama/bge-m3"  # provider 实例 ID（指向来源 ollama_embedding）
     kb_query_max_chars: int = 1000
     kb_retrieval_timeout: float = 5.0  # 整次检索总超时，不按子步骤累计
-    kb_daily_limit: int = 20               # 每天最多自动写入多少条（防爆库）
+    kb_daily_limit: int = 0                # 每天最多写入多少条；**0 = 不限**（2026-11-08 用户要求取消）
     kb_dedup_score: float = 0.90           # 检索相似度 ≥ 此值视为已存在，跳过写入
     kb_inject_top: int = 3                 # 注入时最多带几条
     kb_min_score: float = 0.35             # 注入的最低相关度（滤掉不相关命中）
     kb_max_chars: int = 120                # 单条知识最长字符数
     kb_header: str = (
-        "# 本群沉淀的公共知识（长期记忆，按当前话题检索所得，仅供参考）\n"
-        "# 每条括号里的日期是记录时间：越久远越可能过时，仅作参考，不要当成当下事实复述"
+        "# 本群沉淀的公共知识（长期记忆，按当前话题检索所得）\n"
+        "# 用法：和当前问题相关的就自然用上，别逐条复述、别报「根据知识库」这种话；"
+        "没相关的就当没看见，不必勉强引用\n"
+        "# 每条括号里的日期是记录时间：越久远越可能过时，只作参考，不要当成当下事实断定"
     )
     # 追加在 L3 提炼 prompt 的「# 群聊记录」小节之前 —— 同一次 LLM 调用，
     # 顺带产出群公共知识，不多花一次调用。改它无需动 main.py。
@@ -202,6 +223,29 @@ class PluginConfig:
     # 当轮新发的图不受影响（走 req.image_urls，仍会真正送给多模态模型）；
     # 「先发图、再追问」那种紧跟的追问由 image_carry_seconds 兜底。
     strip_history_images: bool = True
+    # 历史里的 tool 调用/返回也一并摘掉（2026-11-08 用户要求）：
+    # save_sticker 的参数（一长串转义）、「本轮已经入库过表情」这类回执对多轮
+    # 记忆没有价值，却每轮都重发。发送时摘掉即可，库里仍保留便于排查。
+    strip_history_tools: bool = True
+    # ── L2.5 归档（2026-11-08）────────────────────────
+    # L2 只保留最近 history_max_turns 轮原文。超出的轮次以前直接丢；
+    # 现在先压成一篇结构化摘要写进 L4（可检索），成功后再从会话里删。
+    # 失败就不删 —— 宁可占点空间，也不让内容无声消失。
+    l2_archive_enable: bool = False      # 框架 L2 已弃用（改走 chatlog），归档开关关掉
+    l2_archive_batch: int = 4          # 每次最多归档几轮（防一次调用太长）
+    l2_archive_timeout: float = 40.0
+    # ── L2 静默流水（2026-11-08）──────────────────────
+    # 和 L1 同源同格式（谁说了什么），但长度长、会落盘、且**不受 @ 影响**。
+    # 超过 l2_keep_items 后，最旧的一批摘要进 L4（_chatlog_archive）。
+    l2_record_enable: bool = True
+    l2_keep_items: int = 500           # 保留最近多少条聊天（物理存储上限）
+    # 归档时删掉的比例：超出上限后，取最旧的一批压成摘要写进 L4 再删除。
+    # 0.25 = 一次清掉当前总量的四分之一（最少 50 条），避免在 500 条附近反复小幅归档。
+    l2_archive_ratio: float = 0.25
+    # 是否用自定义流水**取代** AstrBot 的 conversations 作为 L2。
+    # 开着的时候框架历史会被清空（req.contexts=[]），记忆完全走 chatlog。
+    l2_own_enable: bool = True
+    l2_inject_items: int = 200         # 每轮注入最近多少条流水（约 7k token）
     # 剥掉图之后给这条消息补的占位文字（保持「当时有人发过图」的信息）
     stripped_image_placeholder: str = "[图片]"
 
@@ -215,8 +259,21 @@ class PluginConfig:
     # 「先发图、再问一句」：后一条纯文字消息拿不到图（图片只在它自己那条事件里送给模型），
     # 所以把图缓存下来补挂到后一条的请求上；这个时长内有效（只补挂一次）。
     image_carry_seconds: float = 30.0
+    # ── @ 但没带图时的「要不要看图」选择器 ────────────
+    # 只有本地正则（routing._IMAGE_QUERY）命中「在问图」才会多跑这一次 LLM：
+    # 由它决定要不要把群里某张缓存图送给主模型。普通 @（打招呼、问事）不触发，
+    # 所以常规对话仍然只有一次请求。判定结果只有「带图 / 不带图」，没有 PASS。
+    image_selector_enable: bool = True
+    image_selector_timeout: float = 8.0
+    image_selector_max_candidates: int = 5    # 给选择器看几张候选图编号
     # 缓存图片按编号查看：每轮最多取几张 / 最多列几次目录（防工具循环）
     image_look_max_per_turn: int = 10
+    # ── 表情库清单直接注入（2026-11-08）───────────────
+    # 清单「#编号 名字」随每次请求给模型，省掉一轮 list_stickers + 一次完整请求。
+    # 28 条约 540 字（≈600 token），换掉的是一整轮上下文（5000–8000 token）。
+    # 表情数超过这个值就不再注入，退回让模型调 list_stickers（清单太长反而不划算）。
+    sticker_prompt_enable: bool = True
+    sticker_prompt_max: int = 60
     image_list_max_per_turn: int = 2
     image_list_limit: int = 20
     # 本地表情库：每条回复最多发/入库几张（防刷屏、防乱存）

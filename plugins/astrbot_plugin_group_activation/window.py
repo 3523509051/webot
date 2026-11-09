@@ -39,7 +39,11 @@ class WindowManager:
     def state(self, gid: str) -> GroupState:
         st = self.states.get(gid)
         if st is None:
-            st = GroupState(group_id=gid, l1=deque(maxlen=self.cfg.l1_size))
+            # 物理上按 **L10** 保留（默认 20 条）：看图选择器要翻得更远才能找到
+            # 「他在问哪张图」，10 条经常不够。注入给主模型时仍只取最近 L1
+            # （l1_size=10）条 —— 见 render_l1，这样不额外增加主请求 token。
+            depth = max(int(self.cfg.l1_size), int(getattr(self.cfg, "l10_size", 20) or 20))
+            st = GroupState(group_id=gid, l1=deque(maxlen=depth))
             self.states[gid] = st
         return st
 
@@ -97,6 +101,11 @@ class WindowManager:
         items = list(st.l1)
         if exclude_last and items:
             items = items[:-1]
+        # L10 → L1：队列物理上存 l10_size 条（默认 20，供看图选择器翻），
+        # 注入主模型时只取最近 l1_size 条（默认 10），避免平白多花 token。
+        limit = max(1, int(self.cfg.l1_size))
+        if len(items) > limit:
+            items = items[-limit:]
         if not items:
             return ""
         # 用「昵称」：内容显式标注，归属一眼可辨 —— 之前写成 `user: text`，

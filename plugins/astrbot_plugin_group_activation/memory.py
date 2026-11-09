@@ -197,23 +197,45 @@ class LongTermMemory:
         self.save()
 
     # ── 渲染（注入用）────────────────────────────────
-    def render(self, gid: str) -> str:
+    def render(self, gid: str, focus: str = "", focus_facts: int = 0, exclude=None) -> str:
         members = self.members(gid)
+        # 机器人自己不该出现在群员画像里（实测被记成「常被群友@和发卡片提及」）
+        if exclude:
+            members = {k: v for k, v in members.items() if k not in exclude}
         if not members:
             return ""
 
         max_members = int(getattr(self.cfg, "l3_max_members", 8) or 8)
         max_facts = int(getattr(self.cfg, "l3_max_facts_per_member", 4) or 4)
+        focus_n = int(focus_facts or getattr(self.cfg, "l3_focus_facts", 6) or 6)
 
         ordered = sorted(
             members.values(),
-            key=lambda m: max((f.last_ts for f in m.facts), default=""),
+            key=lambda m: (
+                max((f.last_ts for f in m.facts), default=""),
+                sum(int(f.hits or 1) for f in m.facts),
+            ),
             reverse=True,
-        )[:max_members]
+        )
+
+        # @ 它的人优先：先占一个名额，并给更多事实条数。
+        # 之前纯按时间排，冷门成员永远挤不进前 8 —— 谁 @ 它却看不到谁的画像
+        # （2026-11-08 用户要求改成「谁 @ 注入谁」）。
+        focused = members.get(focus) if focus else None
+        if focused is not None and focused.facts:
+            order = [focused] + [m for m in ordered if m.name != focus]
+        else:
+            order = ordered
+        order = order[:max_members]
 
         lines: list[str] = []
-        for m in ordered:
-            facts = sorted(m.facts, key=lambda f: f.last_ts, reverse=True)[:max_facts]
+        for m in order:
+            limit = focus_n if focused is not None and m.name == focus else max_facts
+            facts = sorted(
+                m.facts,
+                key=lambda f: (f.last_ts, int(f.hits or 1)),
+                reverse=True,
+            )[:limit]
             if not facts:
                 continue
             parts = []

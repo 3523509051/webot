@@ -337,8 +337,13 @@ def parse_appmsg(text: str) -> dict | None:
             else:
                 # 纯文本引用：**把被引用的原话带出来**。
                 refer_content = refer_unescaped
+    # 取 appmsg 自己的 <type> 前必须先剥掉 <refermsg>：微信有时把 <type>57</type> 放到
+    # <refermsg> 之后，而 _xml_tag 只取第一个 <type>，会误抓被引用消息的类型
+    # （43 视频 / 47 表情）→ kind 变成「卡片」→ @ 丢段（2026-11-08）
+    _own = re.sub(r"<refermsg>.*?</refermsg>", "", text, flags=re.S)
+
     return {
-        "kind": APPMSG_LABELS.get(_xml_tag(text, "type"), "卡片"),
+        "kind": APPMSG_LABELS.get(_xml_tag(_own, "type"), "卡片"),
         "title": _xml_tag(text, "title"),
         "des": _xml_tag(text, "des"),
         "url": html.unescape(
@@ -948,9 +953,10 @@ async def main() -> int:
             return {"ok": True, "items": items, "has_more": bool(result.get("has_more"))}
         if action == "list_stickers":
             try:
-                sticker_limit = int(params.get("limit") or 12)
+                sticker_limit = int(params.get("limit") or 35)
             except (TypeError, ValueError):
-                sticker_limit = 12
+                sticker_limit = 35
+            sticker_limit = max(1, min(sticker_limit, 200))
             return {
                 "ok": True,
                 "items": STICKERS.search(
@@ -958,6 +964,7 @@ async def main() -> int:
                     emotion=str(params.get("emotion") or ""),
                     scene=str(params.get("scene") or ""),
                     limit=sticker_limit,
+                    include_blocked=bool(params.get("include_blocked")),
                 ),
             }
         if action == "save_sticker":
@@ -989,6 +996,28 @@ async def main() -> int:
                 return {"ok": False, "error": str(e)}
             log.info("[表情] 已入库 %s（%s）", saved.get("id"), saved.get("name"))
             return {"ok": True, "sticker": saved}
+        if action == "rename_sticker":
+            try:
+                renamed = STICKERS.rename(
+                    str(params.get("sticker_id") or ""),
+                    name=str(params.get("name") or ""),
+                    emotion=str(params.get("emotion") or ""),
+                    description=str(params.get("description") or ""),
+                    add_tags=params.get("add_tags"),
+                    remove_tags=params.get("remove_tags"),
+                )
+            except KeyError:
+                return {"ok": False, "error": "sticker_not_found"}
+            except Exception as e:  # noqa: BLE001
+                log.warning("表情改名失败: %s", e)
+                return {"ok": False, "error": str(e)}
+            log.info(
+                "[表情] 已改名 %s → %s（标签：%s）",
+                renamed.get("id"),
+                renamed.get("name"),
+                "、".join(renamed.get("tags") or []) or "-",
+            )
+            return {"ok": True, "sticker": renamed}
         if action == "sticker_send":
             gid = params.get("group_id")
             name = _name_of(gid)
@@ -997,6 +1026,12 @@ async def main() -> int:
                 return {"ok": False, "error": "group_not_found"}
             if not item:
                 return {"ok": False, "error": "sticker_not_found"}
+            if STICKERS.is_blocked(item):
+                return {
+                    "ok": False,
+                    "error": "sticker_blocked",
+                    "detail": "这张被标记过「不要发」，换一张",
+                }
             outcome = await asyncio.to_thread(
                 wx.send_image, name, item["path"]
             )
@@ -1019,14 +1054,13 @@ async def main() -> int:
             if not name:
                 return {"ok": False, "error": "group_not_found", "sent_text": False}
             item = STICKERS.find(target)
-            if not item and target:
-                hits = STICKERS.search(
-                    query=target, emotion=target, scene=target, limit=1
-                )
-                if hits:
-                    item = STICKERS.find(hits[0]["id"])
+            # 只认编号（st_xxxx）。以前名字也走 search(limit=1) 兜底，结果永远命中
+            # 编号最小的那张（正反馈，全群只见过一张），已废弃：
+            # 名字只在 list_stickers 里给模型挑，发送必须给编号（2026-11-08）。
             if not item:
                 return {"ok": False, "error": "sticker_not_found", "sent_text": False}
+            if STICKERS.is_blocked(item):
+                return {"ok": False, "error": "sticker_blocked", "sent_text": False}
             body = str(params.get("text") or "")
             meaningful = re.sub(r"@[^\s]+", "", body)
             meaningful = re.sub(r"[\s。.!！?？~～,，、;；:：]+", "", meaningful)
