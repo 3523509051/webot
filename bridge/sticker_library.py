@@ -35,6 +35,12 @@ _EMOTION_SYNONYMS = {
     "庆祝": ("开心", "愉悦", "高兴", "获奖"),
 }
 
+# 群友明确说「别发这张」时，模型用 rename_sticker 给它打这些标签。
+# 硬禁的图不再出现在 list_stickers 的默认结果里，sticker_send 也会拒绝。
+_BLOCK_TAGS = ("不要发", "别发", "禁发", "禁止发送", "别用了")
+# 软提示：仍然可发，但排在候选列表最后。
+_SOFT_TAGS = ("少发", "慎用", "别老发")
+
 
 def _search_terms(value: str) -> set[str]:
     value = str(value or "").strip().lower()
@@ -210,12 +216,29 @@ class StickerLibrary:
                 return None
             return {**item, "id": str(sticker_id), "path": str(path)}
 
+    @staticmethod
+    def _tag_text(item: dict) -> str:
+        return " ".join(StickerLibrary._as_list(item.get("tags")))
+
+    @classmethod
+    def is_blocked(cls, item: dict) -> bool:
+        """群友说过「不要发」的图：不出现在默认列表里，也不允许发送。"""
+        text = cls._tag_text(item)
+        return any(t in text for t in _BLOCK_TAGS)
+
+    @classmethod
+    def is_soft(cls, item: dict) -> bool:
+        """「少发」：还能发，但排在候选列表最后。"""
+        text = cls._tag_text(item)
+        return any(t in text for t in _SOFT_TAGS)
+
     def search(
         self,
         query: str = "",
         emotion: str = "",
         scene: str = "",
         limit: int = 12,
+        include_blocked: bool = False,
     ) -> list[dict]:
         q = str(query or "").strip().lower()
         emo = str(emotion or "").strip().lower()
@@ -231,6 +254,8 @@ class StickerLibrary:
             items = list(self._load()["items"].items())
         out = []
         for sid, item in items:
+            if not include_blocked and self.is_blocked(item):
+                continue
             hay = " ".join([
                 str(item.get("name") or ""),
                 str(item.get("emotion") or ""),
@@ -252,9 +277,65 @@ class StickerLibrary:
                 "tags": item.get("tags") or [],
                 "description": item.get("description") or "",
                 "uses": int(item.get("uses") or 0),
+                "soft": self.is_soft(item),
             })
-        out.sort(key=lambda x: (-x["uses"], x["id"]))
+        # 不再按 uses 倒序：那是正反馈，被发过的图会永远排第一、越用越靠前，
+        # 最后全群只见过 st_0020（实测 111 次）。改成「少发的排最后 + 其余按编号」，
+        # 顺序稳定但和热度无关，让模型按名字自己挑（2026-11-08）。
+        out.sort(key=lambda x: (1 if x["soft"] else 0, x["id"]))
         return out[:limit]
+
+    def rename(
+        self,
+        sticker_id: str,
+        name: str = "",
+        emotion: str = "",
+        description: str = "",
+        add_tags=None,
+        remove_tags=None,
+    ) -> dict:
+        """改名字 / 补标签。群友说「不要发这个」时，模型用 add_tags 打上「不要发」。
+
+        文件名会跟着重排成 `{id}_{情绪}_{名字}.jpg`；万一改名失败也不影响使用，
+        索引里的 file 字段才是唯一依据。
+        """
+        sid = str(sticker_id or "").strip().lstrip("#")
+        with self._lock:
+            data = self._load()
+            item = data["items"].get(sid)
+            if not item:
+                raise KeyError("sticker_not_found")
+
+            if name:
+                item["name"] = self._clean(name) or item.get("name") or "表情"
+            if emotion:
+                item["emotion"] = self._clean(emotion, 20) or item.get("emotion") or "其他"
+            if description:
+                item["description"] = str(description)[:200]
+
+            tags = self._as_list(item.get("tags"))
+            for t in self._as_list(add_tags):
+                if t not in tags:
+                    tags.append(t)
+            drop = set(self._as_list(remove_tags))
+            if drop:
+                tags = [t for t in tags if t not in drop]
+            item["tags"] = tags[:12]
+
+            old_path = self.root / item["file"]
+            suffix = old_path.suffix or ".jpg"
+            new_name = f"{sid}_{item['emotion']}_{item['name']}{suffix}"
+            new_path = self.files / new_name
+            if old_path.is_file() and old_path.resolve() != new_path.resolve():
+                try:
+                    old_path.replace(new_path)
+                    item["file"] = f"files/{new_name}"
+                except OSError:
+                    pass
+
+            item["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            self._save(data)
+            return {**item, "id": sid}
 
     def mark_used(self, sticker_id: str) -> None:
         with self._lock:

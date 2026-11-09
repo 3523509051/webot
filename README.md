@@ -57,12 +57,16 @@
 
 ### 新功能与升级
 
-当前版本 **v0.20.1**：新增本地文件库，接收 md/c/cpp 等文本代码文件，AI 用 `list_files` / `read_file` 按需读取；`.bat` / `.exe` / 压缩包直接拒收。微信链接卡片上报完整 URL，公众号文章可读；引用链接不再截断；表情检索支持情绪同义词。表情库、文字+表情标记、窗口 preflight 等沿用 v0.19.0。
+当前版本 **v0.20.2**：记忆系统重构——弃用框架原生 L2（conversations），改用插件自建聊天流水（JSONL 落盘，保留 500 条、注入最近 200 条、超限按 25% 比例归档）；新增模型自主记忆工具 `remember`（写群员画像 L3 / 群知识 L4，每轮最多 1 条）、`recall`（按关键词检索全部 500 条流水）、`kb_search`（按需查群知识库）；高德天气/地图放开批次授权，模型想调就调（仅保留开关、日额度、批次存活三道门槛）；新增**天气前置**：检测到天气字样时先用只带 L1 背景的小模型提取城市/预报参数并代查高德，数据交回主模型润色。表情库、本地文件库、preflight 等沿用 v0.20.1。
 
 已有服务器请按 [新功能升级指南](docs/upgrade-v0.20.0.md) 更新；功能配置详见 [地图与网页工具说明](docs/maps-web.md)。
 
 ### 消耗控制
 
+- v0.20.2 自建 L2 流水：没人 @ 也在记、不掺工具调用与报错、重启可读回。`chatlog.py` 落盘 JSONL（首条立即写，之后每 5 条落一次），内存层 `deque(maxlen=l2_keep_items=500)`；每轮注入最新 `l2_inject_items=200` 条，超过保留上限按 `l2_archive_ratio=0.25` 比例归档删除，不依赖窗口休眠触发。框架原生 conversations 已弃用：每轮 `req.contexts=[]` 并跳过 `compact_contexts`。
+- v0.20.2 记忆四工具（触发规则随提示词注入）：`look_profile`（查 L3 群员画像，先 `look_profile()` 列名单再按名查人，最多 3 人 12 条）、`kb_search`（按需查 L4 群知识库）、`remember`（模型自主判断写入，每轮最多 1 条，**无自动提炼兜底**，防循环浪费）、`recall`（关键词本地匹配检索全部 500 条流水，零 LLM 成本）。规则：问题指向具体人 → 先 `look_profile`；指向群规/约定/结论 → 先 `kb_search`。
+- v0.20.2 高德放开授权：`amap_weather` / `amap_places` / `amap_route` 移除 `requester_id` 批次名单校验（模型想调就调），只剩 `amap_enable` 开关、日额度与批次存活三道门槛；追问（"那明天呢"）天然放行。
+- v0.20.2 天气前置（`weather_fast_enable=true`）：检测到天气字样时，先用**只带 L1 背景**的小模型提取 `{"city","forecast"}` 并直查高德，把数据交回主模型润色（人格语气统一）；缺城市时参考小模型给出的反问句；任一步失败返回空，主模型自带 `amap_weather` 工具兜底，不影响主流程。小模型超时 10 秒、高德 15 秒。
 - v0.20.0 本地文件库：`D:\webot\files` 保存文本/代码文件和 `index.json`；收到文件只记 `[文件 #f_0001]`，不把内容塞进 L1/L2。AI 需要时用 `list_files` 找编号、`read_file` 读取（默认 12000 字，最大 20000）。`.bat`、`.exe`、`.ps1`、压缩包等拒收；单文件上限 5MB。
 - v0.20.0 微信链接：链接卡片带完整 URL，AI 用 `read_website` 按需读取；`mp.weixin.qq.com` 专用解析 `#js_content`；引用链接解析 `<refermsg>` 的完整 `<url>`，不截断。
 - v0.19.0 本地表情库：`D:\webot\stickers` 保存图片与 `index.json`；`list_stickers` 按情绪/场景/关键词检索，`send_sticker` 用 `gui.send_image` 发图片气泡，`save_sticker` 把本群缓存图片正式入库并让 AI 命名、打标签。每条回复最多发 1 张、入库 1 张；同图 sha256 去重，不覆盖不删除。

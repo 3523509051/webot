@@ -78,8 +78,9 @@ class KBStore:
         added = dup = failed = 0
         dup_score = 0.0
         quota_hit = False
+        daily = int(getattr(self.cfg, "kb_daily_limit", 0) or 0)
         for t in texts:
-            if added >= self.cfg.kb_daily_limit or not self._quota_left():
+            if daily > 0 and (added >= daily or not self._quota_left()):
                 quota_hit = True
                 logger.info("[group_activation] 知识库今日写入额度用完（群 %s）", gid)
                 break
@@ -98,10 +99,15 @@ class KBStore:
                 # 时间戳直接拼进正文（而不是存别处）：嵌入时一起进去，
                 # 检索命中后模型能看到「这条知识是什么时候记的」——
                 # 久远的条目（如「最近大家在追 X」）可以自行打折扣。
-                stamped = (
-                    f"（记于 {time.strftime('%Y-%m-%d')}）"
-                    f"{t[: self.cfg.kb_max_chars]}"
-                )
+                # 已经带「（记于 …）」的（整理过的旧条目、L2.5 摘要）保留原日期，
+                # 否则会叠成「（记于 今天）（记于 10-09）…」两个前缀（2026-11-08 实测）。
+                if t.startswith("（记于"):
+                    stamped = t[: self.cfg.kb_max_chars + 20]
+                else:
+                    stamped = (
+                        f"（记于 {time.strftime('%Y-%m-%d')}）"
+                        f"{t[: self.cfg.kb_max_chars]}"
+                    )
                 await helper.upload_document(
                     file_name=f"ga-{gid}-{int(time.time() * 1000)}.txt",
                     file_content=None,
@@ -312,19 +318,22 @@ class KBStore:
 
     # ── 每日额度（与联网搜索同款模式）────────────────
     def _quota_left(self) -> int:
+        limit = int(getattr(self.cfg, "kb_daily_limit", 0) or 0)
+        if limit <= 0:
+            return 10 ** 9       # 0/负数 = 不限（2026-11-08）
         today = time.strftime("%Y-%m-%d")
         try:
             with open(self._usage_path, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception:  # noqa: BLE001
-            return self.cfg.kb_daily_limit
+            return limit
         if data.get("date") != today:
-            return self.cfg.kb_daily_limit
+            return limit
         try:
             used = int(data.get("count", 0))
         except (TypeError, ValueError):
             used = 0
-        return max(0, self.cfg.kb_daily_limit - used)
+        return max(0, limit - used)
 
     def _quota_count_up(self) -> None:
         """写入成功后计数 +1（原子写，避免写坏计数文件）。"""

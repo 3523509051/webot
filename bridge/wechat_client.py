@@ -1137,18 +1137,12 @@ class WeChatClient:
             if not lst.Exists(1.5, 0.2):
                 log.info("UIA @ 弹层里没有列表控件")
                 return False
-            # 单格滚动找目标；找到后 ScrollIntoView 再点，避免一次滚 3 格
-            # 把候选头像顶出可视区，点击落到列表外。
-            target, seen = self._find_mention_item(lst, member, max_rounds=12)
+            # 统一走「打名字过滤」：@ 之后把名字粘进输入框，让微信自己把候选收窄。
+            # 不再用「首屏直查 / 滚动翻页」那套 —— 成员一多就滚不到底，且滚到后面
+            # 头像会被顶出可视区，点击落空（2026-11-08 用户要求全走过滤）。
+            target = self._filter_to_member(uia, edit, lst, member, pop=pop)
             if target is None:
-                target = self._filter_to_member(uia, edit, lst, member)
-            if target is None:
-                log.info(
-                    "UIA @ 列表里没有 %s（滚动扫过 %d 人：%s）",
-                    member,
-                    len(seen),
-                    seen[:8],
-                )
+                log.info("UIA @ 名字过滤未命中 %s，本条不发 @", member)
                 return False
             try:
                 import uiautomation as auto
@@ -1166,32 +1160,105 @@ class WeChatClient:
             log.warning("UIA @ 选人失败: %s", e)
             return False
 
-    def _filter_to_member(self, uia, edit, lst, member: str):
+    def _filter_to_member(self, uia, edit, lst, member: str, pop=None):
         """用「打名字过滤」在弹层里找目标；找不到就把过滤文字退掉、复原成只有 @。
 
-        微信的 @ 弹层输入过滤是它自己的搜索：把名字粘进输入框，列表会
-        收窄到匹配的几个人。失败时**必须逐字退格复原** —— 否则过滤文字会
-        留在输入框里，跟正文拼在一起发出去（正文变成『正文@如月之影如月之影』）。
+        2026-11-08 修掉两处致命问题：
+        1) 以前调 uia._paste_into()，它第一步是**点击输入框**拿焦点 —— 点击会让微信
+           立刻收起 @ 弹层，之后 GetChildren() 自然是空的。这条路径历史上从没成功过。
+           现在改为直接写剪贴板 + Ctrl+V（焦点本来就在输入框里）。
+        2) _clip_set / _read_edit_value 是 WeChatGUI 的 staticmethod，不是模块级函数，
+           `from wechatauto.uia_driver import _clip_set` 必然 ImportError，被 except
+           吃掉后静默 return None —— 日志里连一行都不留。现在一律走 uia.xxx。
         """
-        try:
-            uia._paste_into(edit, member, clear=False)
-        except Exception as e:  # noqa: BLE001
-            log.debug("名字过滤：粘贴失败: %s", e)
+        setter = getattr(uia, "_clip_set", None)
+        if setter is None:
+            log.info("名字过滤：WeChatGUI 没有 _clip_set，放弃")
             return None
-        time.sleep(0.4)
         try:
-            items = lst.GetChildren() or []
-        except Exception:  # noqa: BLE001
-            items = []
-        target = self._pick_mention(items, member)
-        if target is not None:
-            log.info("UIA @ 用名字过滤后找到 %s", member)
-            return target
-        try:
-            for _ in range(len(member)):
-                edit.SendKeys("{Backspace}", waitTime=0.02)
+            setter(str(member))
         except Exception as e:  # noqa: BLE001
-            log.debug("名字过滤：退格复原失败: %s", e)
+            log.warning("名字过滤：写剪贴板失败: %s", e)
+            return None
+
+        reader = getattr(uia, "_read_edit_value", None)
+        try:
+            edit.SendKeys("{Ctrl}v", waitTime=0.05)
+        except Exception as e:  # noqa: BLE001
+            log.warning("名字过滤：Ctrl+V 失败: %s", e)
+            return None
+
+        # 粘贴有没有真的落进输入框？读不回值时不当作失败（控件可能不暴露 Value）
+        time.sleep(0.25)
+        got = ""
+        if reader is not None:
+            try:
+                got = reader(edit) or ""
+            except Exception:  # noqa: BLE001
+                got = ""
+        if got and str(member) not in got:
+            log.info("名字过滤：粘贴没落进输入框（读回=%r），改用逐字输入", got[:40])
+            try:
+                edit.SendKeys(str(member), waitTime=0.04)
+                time.sleep(0.2)
+            except Exception as e:  # noqa: BLE001
+                log.warning("名字过滤：逐字输入也失败: %s", e)
+                return None
+
+        # 弹层会随输入重算，列表控件可能被重建 —— 每轮重新取，别用旧句柄
+        target = None
+        items: list = []
+        for attempt in range(4):
+            time.sleep(0.45 if attempt == 0 else 0.25)
+            cur = lst
+            if pop is not None:
+                try:
+                    cand = pop.ListControl()
+                    if cand.Exists(0.2, 0.1):
+                        cur = cand
+                except Exception:  # noqa: BLE001
+                    cur = lst
+            try:
+                items = cur.GetChildren() or []
+            except Exception:  # noqa: BLE001
+                items = []
+            target = self._pick_mention(items, member)
+            if target is not None:
+                log.info("UIA @ 用名字过滤后找到 %s（候选 %d 个）", member, len(items))
+                return target
+            if len(items) == 1:
+                only = items[0]
+                nm = (getattr(only, "Name", "") or "").strip()
+                log.info(
+                    "UIA @ 过滤后只剩 1 个候选（Name=%r），直接选它（目标 %s）", nm[:30], member
+                )
+                return only
+            if items:
+                log.info(
+                    "UIA @ 过滤第 %d 轮候选 %r", attempt, [(getattr(i, "Name", "") or "")[:12] for i in items[:5]]
+                )
+
+        # 没找到：只在过滤文字确实进了输入框时才退格，否则会把 @ 一起吃掉
+        now = ""
+        if reader is not None:
+            try:
+                now = reader(edit) or ""
+            except Exception:  # noqa: BLE001
+                now = ""
+        if not now or now.rstrip().endswith(str(member)):
+            try:
+                for _ in range(len(str(member))):
+                    edit.SendKeys("{Backspace}", waitTime=0.02)
+            except Exception as e:  # noqa: BLE001
+                log.debug("名字过滤：退格复原失败: %s", e)
+        else:
+            log.info("名字过滤：输入框里没有过滤文字（读回=%r），跳过退格", now[:40])
+        log.info(
+            "UIA @ 名字过滤也没命中 %s（候选 %d 个：%r）",
+            member,
+            len(items),
+            [(getattr(i, "Name", "") or "")[:12] for i in items[:5]],
+        )
         return None
 
     @staticmethod

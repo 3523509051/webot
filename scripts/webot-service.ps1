@@ -169,11 +169,35 @@ function Start-Bridge {
     return $true
 }
 
+function Test-BridgeConnected {
+    # 只看日志会误判：桥已运行很久时，「已连接 AstrBot」早已滚出 tail 80 行，
+    # start.cmd 会在 5/5 白等 150 秒（2026-10-24 实况）。
+    # 这里直接查桥进程到 OneBot 端口的 established 连接。
+    $port = 6199
+    try {
+        $cfgPath = Join-Path $BridgeDir 'config.json'
+        if (Test-Path $cfgPath) {
+            $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ("$($cfg.astrbot.ws_url)" -match ':(\d+)') { $port = [int]$Matches[1] }
+        }
+    } catch { }
+    foreach ($p in @(Get-BridgeProcesses)) {
+        $conn = Get-NetTCPConnection -OwningProcess $p.ProcessId -State Established -ErrorAction SilentlyContinue |
+                Where-Object { $_.RemotePort -eq $port }
+        if ($conn) { return $true }
+    }
+    return $false
+}
+
 function Wait-BridgeReady {
     param([int]$TimeoutSec = 150)
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 3
+        if (Test-BridgeConnected) {
+            Ok '桥已连上 AstrBot（TCP 连接已建立）'
+            return 'connected'
+        }
         if (-not (Test-Path $BridgeErr)) { continue }
         $tail = (Get-Content $BridgeErr -Encoding Default -Tail 80 -ErrorAction SilentlyContinue | Out-String)
         if ($tail -match '已连接 AstrBot') { Ok '桥已连上 AstrBot'; return 'connected' }
