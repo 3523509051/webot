@@ -934,6 +934,21 @@ def load_config() -> dict:
 
 
 async def main() -> int:
+    from bridge_lock import BridgeLock
+    ownership=BridgeLock()
+    if not ownership.acquire():
+        log.error('此 webot 目录已有桥实例运行，请先按原方式停止。')
+        return 1
+    try:return await _main()
+    finally:ownership.close()
+
+
+async def _main() -> int:
+    from bridge_lock import require_client_running
+    try:require_client_running()
+    except Exception:
+        log.error('请先手动启动微信并登录；桥不会启动微信客户端。')
+        return 1
     cfg = load_config()
 
     logging.basicConfig(
@@ -2158,7 +2173,8 @@ async def main() -> int:
     bot = OneBotClient(
         ws_url=cfg["astrbot"]["ws_url"],
         self_id=cfg["astrbot"].get("self_id", 10001),
-        token=cfg["astrbot"].get("token", ""),
+        token=(os.environ.get(str(cfg["astrbot"].get("token_env") or ''), '').strip()
+               if cfg["astrbot"].get("token_env") else cfg["astrbot"].get("token", "")),
         heartbeat=float(cfg["astrbot"].get("heartbeat_seconds", 15)),
         action_handler=handle_action,
         identity_directory=identities,

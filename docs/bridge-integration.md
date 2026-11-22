@@ -11,9 +11,12 @@ webot 是反向 WebSocket 客户端，由 `bridge/onebot11.py` 主动连接 `con
 | 账号 | `X-Self-ID` 来自 `astrbot.self_id`，事件的 self_id 使用同一配置值 |
 | 角色 | `X-Client-Role: Universal` |
 | 认证 | 配置 token 时发送 `Authorization: Bearer <token>` |
+
 | 事件 | lifecycle、heartbeat、群聊及已授权私聊 message |
 | 重连 | 断线后重新连接；重连不等同于重放微信历史 |
 | 动作响应 | 保留收到的 echo，返回 status、retcode、data；发送失败可含 delivery_state |
+
+可用 astrbot.token_env 指定存放连接令牌的环境变量名称；设置该名称后以环境为准，不再回退 JSON token。组合启动器负责注入该值，普通手动部署需自行提供。桥主入口会持有本目录的进程互斥，扫描组合配置时也核对是否已有桥运行；不会接管已有实例或打开微信。
 
 认证在连接目标实现，部署者需核对令牌与网络入口。桥没有另开一个通用 HTTP 管理面板。
 

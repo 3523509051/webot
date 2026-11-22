@@ -2,6 +2,7 @@
   "astrbot": {
     "ws_url": "ws://127.0.0.1:6199/ws",
     "token": "",
+    "token_env": "",
     "self_id": 10001,
     "heartbeat_seconds": 15
   },

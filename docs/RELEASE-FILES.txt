@@ -1,13 +1,38 @@
-Source publication file list (2026-11-22)
+Source publication file list (2026-11-22; all-group combination update)
 Repository: webot
-Files: 148
+Files: 152
 
+"stickers/default/files/st_0001_\351\253\230\345\206\267\345\253\214\345\274\203_\346\227\240\350\257\255\345\206\260\347\262\276.jpg"
+"stickers/default/files/st_0002_\346\270\251\351\246\250_\345\217\214\351\276\231\350\264\264\350\264\264.jpg"
+"stickers/default/files/st_0003_\346\260\224\351\274\223\351\274\223_\345\202\262\345\250\207\345\207\266\350\220\214.jpg"
+"stickers/default/files/st_0004_\344\270\215\347\210\275_\350\223\235\345\217\221\345\260\217\345\245\263\344\273\206.jpg"
+"stickers/default/files/st_0005_\345\221\206\346\273\236\350\266\205\347\204\266_\345\210\207\346\215\242\347\245\236\346\240\274\346\250\241\345\274\217.jpg"
+"stickers/default/files/st_0006_\346\227\240\350\257\255\345\253\214\345\274\203_\345\245\263\344\273\206\345\253\214\345\274\203.jpg"
+"stickers/default/files/st_0007_\345\221\206\350\220\214\345\247\224\345\261\210_\345\220\203\347\231\275\351\245\255.jpg"
+"stickers/default/files/st_0008_\345\221\206\350\220\214_\346\206\250\346\206\250\344\270\276\346\213\215.jpg"
+"stickers/default/files/st_0009_\351\246\213\345\221\206\346\273\236_\345\221\206\350\220\214\346\265\201\345\217\243\346\260\264.jpg"
+"stickers/default/files/st_0010_\350\260\203\344\276\203_\350\200\201\345\256\236\350\265\232\351\222\261\345\276\210\346\236\257\347\207\245.jpg"
+"stickers/default/files/st_0011_\346\204\211\346\202\246_\345\274\200\345\277\203\345\260\217\345\245\263\344\273\206.jpg"
+"stickers/default/files/st_0012_\345\245\266\345\207\266_\347\224\237\346\260\224\345\260\217\345\245\263\344\273\206.jpg"
+"stickers/default/files/st_0013_\347\226\221\346\203\221\346\207\265\351\200\274_\345\214\272\345\207\266\344\270\215\345\210\206.jpg"
+"stickers/default/files/st_0014_\350\207\252\345\230\262_Codex\344\270\212\345\244\264\344\272\206.jpg"
+"stickers/default/files/st_0015_\346\203\212\346\201\220_\351\234\207\346\203\212\345\260\217\347\264\253\347\236\263.jpg"
+"stickers/default/files/st_0016_\345\221\206\350\220\214\345\247\224\345\261\210_\350\266\264\345\234\260\346\232\227\344\270\255\350\247\202\345\257\237.jpg"
+"stickers/default/files/st_0017_\345\230\262\350\256\275\351\204\231\350\247\206_\347\234\274\351\225\234\347\220\252\351\234\262\350\257\272\351\204\231\350\247\206.jpg"
+"stickers/default/files/st_0018_\346\222\222\345\250\207\347\264\242\350\246\201_token\344\270\212\344\272\244.jpg"
+"stickers/default/files/st_0019_\345\205\203\346\260\224_\350\223\235\351\262\270\345\245\263\344\273\206.jpg"
+"stickers/default/files/st_0020_\346\227\240\350\257\255\345\206\267\346\274\240_\346\227\240\350\257\255\347\276\216\346\264\262\347\213\256.jpg"
+"stickers/default/files/st_0021_\346\220\236\347\254\221_\346\251\231\350\211\262\346\200\252\345\222\226\346\222\205\350\207\200.jpg"
+"stickers/default/files/st_0022_\345\202\262\345\250\207\345\253\214\345\274\203_\347\224\250\344\270\215\350\265\267\345\260\261\345\210\253\347\224\250.jpg"
+"stickers/default/files/st_0023_\345\277\203\350\231\232\350\207\252\345\230\262_\347\236\216\347\274\226\345\272\224\344\273\230.jpg"
+"stickers/default/files/st_0024_\345\230\262\350\256\275_\347\254\250\350\233\213\345\257\271\350\247\206.jpg"
 .env.example
 .gitignore
 Dockerfile.astrbot
 LICENSE
 README.md
 bridge/README.md
+bridge/bridge_lock.py
 bridge/browser_search.py
 bridge/config.example.json
 bridge/file_library.py
@@ -26,7 +51,9 @@ bridge/probe_api.py
 bridge/probe_db.py
 bridge/probe_msgs.py
 bridge/requirements.txt
+bridge/run_managed.py
 bridge/safe_browser.py
+bridge/scan_groups.py
 bridge/send_result.py
 bridge/sticker_library.py
 bridge/unified_poll.py
@@ -48,6 +75,7 @@ docs/memory-upgrade-execution-plan.md
 docs/memory-upgrade-progress.md
 docs/porting.md
 docs/pre-push-review-2026-11-22-2009.md
+docs/pre-push-review-2026-11-22-2151.md
 docs/roadmap.md
 docs/tech-stack.md
 docs/upgrade-v0.15.1.md
@@ -104,30 +132,6 @@ scripts/webot-service.ps1
 start.cmd
 status.cmd
 stickers/README.md
-stickers/default/files/st_0001_高冷嫌弃_无语冰精.jpg
-stickers/default/files/st_0002_温馨_双龙贴贴.jpg
-stickers/default/files/st_0003_气鼓鼓_傲娇凶萌.jpg
-stickers/default/files/st_0004_不爽_蓝发小女仆.jpg
-stickers/default/files/st_0005_呆滞超然_切换神格模式.jpg
-stickers/default/files/st_0006_无语嫌弃_女仆嫌弃.jpg
-stickers/default/files/st_0007_呆萌委屈_吃白饭.jpg
-stickers/default/files/st_0008_呆萌_憨憨举拍.jpg
-stickers/default/files/st_0009_馋呆滞_呆萌流口水.jpg
-stickers/default/files/st_0010_调侃_老实赚钱很枯燥.jpg
-stickers/default/files/st_0011_愉悦_开心小女仆.jpg
-stickers/default/files/st_0012_奶凶_生气小女仆.jpg
-stickers/default/files/st_0013_疑惑懵逼_区凶不分.jpg
-stickers/default/files/st_0014_自嘲_Codex上头了.jpg
-stickers/default/files/st_0015_惊恐_震惊小紫瞳.jpg
-stickers/default/files/st_0016_呆萌委屈_趴地暗中观察.jpg
-stickers/default/files/st_0017_嘲讽鄙视_眼镜琪露诺鄙视.jpg
-stickers/default/files/st_0018_撒娇索要_token上交.jpg
-stickers/default/files/st_0019_元气_蓝鲸女仆.jpg
-stickers/default/files/st_0020_无语冷漠_无语美洲狮.jpg
-stickers/default/files/st_0021_搞笑_橙色怪咖撅臀.jpg
-stickers/default/files/st_0022_傲娇嫌弃_用不起就别用.jpg
-stickers/default/files/st_0023_心虚自嘲_瞎编应付.jpg
-stickers/default/files/st_0024_嘲讽_笨蛋对视.jpg
 stickers/default/index.json
 stop.cmd
 tests/test_activity_cleanup.py

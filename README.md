@@ -164,6 +164,14 @@ webot 主动连接上层的 OneBot v11 反向 WebSocket 服务，握手提供 `X
 
 ## 快速开始
 
+### 与 Pero 自动组合启动
+
+安装双方依赖、构建 Pero 前端后，**手动启动微信并登录**，从 Pero 运行 `start-wechat.cmd`。并列目录自动找到 webot；否则使用 `start-wechat.cmd --webot-root "D:\你的目录\webot"`。
+
+该入口扫描已登录账号的全部群，自动对齐桥连接、令牌、监听群和 Pero 路由／发送范围，再启动 Core、控制室和桥。它不会启动或关闭微信客户端，不会自动登录。后续组合重启重新扫描，新群默认开放；Pero 控制室手动关闭的群保持关闭，主人跨群读取范围仍独立勾选。
+
+组合启动会修改 bridge/config.json 并先备份原文件。当前桥支持 astrbot.token_env 从进程环境读取连接令牌，组合入口负责加密保存与注入。详细步骤见 [Pero 微信组合使用指南](https://github.com/3523509051/Pero/blob/main/docs/wechat-combination.md)。下方供单独运行桥使用。
+
 ### 1. 运行条件
 
 | 项目 | 要求 |
@@ -292,7 +300,7 @@ OneBot 连接令牌、内部管理访问码和模型 API Key 是不同凭据。w
 
 仓库仍保留旧插件、Docker Compose 及 `start.cmd`、`restart-all.cmd`、`restart-astr.cmd` 等运维入口。它们面向原 AstrBot 组合，不是 Pero 的通用启动器；`scripts/webot-service.ps1` 当前仍包含 Docker／AstrBot 服务控制。
 
-使用 Pero 时，分别启动 Pero 和 `bridge/main.py`，或使用自己明确配置的服务任务。不要因为看见“一键启动”就假定它会操作当前 Pero 组合。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
+使用 Pero 时，优先使用 **Pero 仓库的 start-wechat.cmd**，或分别启动 Pero 和 bridge/main.py。webot 根目录的旧 start.cmd 仍属于 AstrBot 组合，不会因此成为 Pero 启动器。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
 
 ## 文档与开发
 
