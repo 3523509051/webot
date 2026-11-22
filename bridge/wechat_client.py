@@ -25,6 +25,7 @@ import html
 import logging
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +34,55 @@ from image_index import ImageIndex
 
 log = logging.getLogger("wechat")
 
+
+class WatermarkUnavailable(RuntimeError):
+    """无法确定可信水位（数据库不可用/查询异常）。
+
+    只由 `latest_seq(strict=True)` 抛出：调用方必须把目标**暂缓**（下次再试），
+    不能退化成 0 —— 0 表示"从头读"，会把历史消息当新消息回放。
+    """
+
+    def __init__(self, reason: str = "") -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 SENDER_RE = re.compile(r"^([A-Za-z0-9_\-]+):(?!//)\s*(.*)$", re.S)
 GROUP_SUFFIX = "@chatroom"
+
+# 会话标题的占位符尾巴：只认驱动自己声明并实测过的常量（`CHAT_NAME_SUFFIXES`）。
+# 禁止从运行时观察里“学习”任何未知尾巴 —— 未知字符串不能作为会话身份依据。
+_DRIVER_CHAT_SUFFIXES = ("按住鼠标 语音输入文字", "按住鼠标语音输入文字", "语音输入文字")
+_driver_suffixes: tuple[str, ...] | None = None
+
+
+def driver_chat_suffixes() -> tuple[str, ...]:
+    """取驱动声明的占位符常量；取不到时退回到与驱动一致的固定三串。"""
+    global _driver_suffixes
+    if _driver_suffixes is None:
+        try:
+            from wechatauto.uia_driver import CHAT_NAME_SUFFIXES as _suffixes
+            _driver_suffixes = tuple(str(x) for x in _suffixes if x)
+        except Exception:  # noqa: BLE001
+            _driver_suffixes = ()
+        if not _driver_suffixes:
+            _driver_suffixes = _DRIVER_CHAT_SUFFIXES
+    return _driver_suffixes
+
+
+def clean_chat_title(text: str | None) -> str:
+    """按驱动已验证的占位符常量清洗标题；未命中就原样返回。
+
+    只做「整串末尾等于某个已声明占位符」的剥离，不做前缀/包含/模糊推断，
+    所以清洗后的结果仍可作为严格等值比较的身份依据。
+    """
+    name = (text or "").strip()
+    for tail in driver_chat_suffixes():
+        if tail and name.endswith(tail):
+            head = name[: -len(tail)].strip()
+            if head:
+                return head
+    return name
 
 # 动画表情转出来的静态帧缓存目录（同一个表情只下一次、只转一次）
 _EMOJI_CACHE_DIR = Path(__file__).with_name("cache") / "emoji"
@@ -202,7 +250,33 @@ def _zstd_text(blob) -> str:
         return ""
 
 
+@dataclass(frozen=True)
+class SendTarget:
+    """统一发送目标描述。
+
+    至少包含：机器人账号（`account`）、会话类型（`kind`）、稳定目标 ID（`ref`）
+    和实际显示名（`display`）。昵称只是显示名，不参与主键；`key` 是上层沿用的
+    兼容入口键（群名 / `private:<wxid>`），只用于缓存归属与日志，不当作身份。
+    """
+
+    account: str
+    kind: str          # "group" | "private"
+    ref: str           # 群稳定 ID / 好友 wxid
+    display: str       # 实际显示名（仅展示与唯一性校验用）
+    key: str           # 兼容入口键
+
+    @property
+    def is_private(self) -> bool:
+        return self.kind == "private"
+
+
 class WeChatClient:
+    # 已确认目标身份的有效期：到期只做必要复核（快照/唯一性/窗口/标题），
+    # 不无条件搜索会话、不切换窗口。
+    _TARGET_TTL = 300.0
+    # 投递确认轮询间隔（先快后慢）；总时长仍受既有 8 秒上限约束。
+    _CONFIRM_DELAYS = (0.2, 0.3, 0.5, 0.7, 1.0)
+
     def __init__(
         self,
         bot_nickname: str = "",
@@ -244,6 +318,13 @@ class WeChatClient:
         # 输入框坐标缓存：同一会话连续发图时跳过 get_input_box 的重校准。
         self._last_input_box: tuple[int, int, int, int] | None = None
         self._last_input_group: str = ""
+        # 统一发送目标缓存：群/私聊共用，只保存已确认的稳定目标与窗口身份。
+        # 不跨进程重启恢复；账号、会话类型、稳定引用或窗口身份变化即失效。
+        # 身份（账号/类型/ref/展示名唯一性/窗口句柄）与输入框坐标分开校验：
+        # 坐标丢失只重新探测输入框，不会重新打开会话。
+        self._confirmed_target: dict | None = None
+        # 最近一次缓存失效原因，只用于日志与调用方判断是否需要安全定位。
+        self._last_miss_reason: str = ""
         self.refresh_contacts()
 
         # 已配置的群名，用于把 UIA 读到的会话名解析回标准群名
@@ -258,7 +339,7 @@ class WeChatClient:
     # ── 联系人 / 群 ────────────────────────────────────
     def refresh_contacts(self) -> None:
         try:
-            self._nick_cache = dict(self.db.nickname_map() or {})
+            self._nick_cache = dict(self.db.nickname_map(refresh=True) or {})
         except Exception as e:  # noqa: BLE001
             log.warning("nickname_map 获取失败: %s", e)
             self._nick_cache = {}
@@ -322,12 +403,26 @@ class WeChatClient:
                 return v
         return 0
 
-    def latest_seq(self, group_id: str) -> int:
-        """当前最大水位（用于启动对齐，避免重放历史）。"""
+    def latest_seq(self, group_id: str, *, strict: bool = False):
+        """当前最大水位（用于启动对齐，避免重放历史）。
+
+        三态，**必须区分"未知"与"真的是 0"**：
+
+        - 真实空会话（查得到但没消息）→ `0`（合法起点）；
+        - 查询异常 + `strict=False`（旧调用方兼容）→ `None`（未知）；
+        - 查询异常 + `strict=True`（启动快照 / 私聊授权门 / 发现流程）→
+          抛 `WatermarkUnavailable`。
+
+        绝不把查询失败当成 `0`：`0` 会被当成"从头读"，把整段历史当新消息回放。
+        这里不打日志（保持纯查询），由调用方记录受控原因。
+        """
+
         try:
             msgs = self.db.get_messages(group_id, 1, 0) or []
-        except Exception:  # noqa: BLE001
-            return 0
+        except Exception as exc:  # noqa: BLE001
+            if strict:
+                raise WatermarkUnavailable(type(exc).__name__) from exc
+            return None
         return self._seq(msgs[0]) if msgs else 0
 
     def new_messages(self, group_id: str, since_seq: int) -> list[dict]:
@@ -351,6 +446,108 @@ class WeChatClient:
                 continue
             out.append(n)
         return out
+
+    # 一对一私聊里永远不作为会话身份出现的固定串（系统/服务号）。
+    _PRIVATE_EXCLUDED = frozenset({
+        "filehelper", "fmessage", "qmessage", "tmessage", "newsapp",
+        "weixin", "medianote", "floatbottle",
+    })
+
+    def refresh_private_contacts(self) -> dict[str, str]:
+        """只刷新联系人快照（昵称映射），**不做会话扫描**。
+
+        联系人是私聊身份的前置条件（`private_sessions` 用它判定"是不是真人"），
+        但刷新全量昵称映射很贵：正常聊天读取路径不该每轮都付这份钱。
+        """
+        try:
+            self._nick_cache = dict(self.db.nickname_map(refresh=True) or {})
+        except Exception as e:  # noqa: BLE001
+            log.warning("nickname_map 刷新失败: %s", e)
+            return dict(self._nick_cache)
+        return dict(self._nick_cache)
+
+    def is_private_contact(self, wxid: str) -> bool:
+        """当前快照里该 wxid 是否为一个可用的一对一联系人（不查会话表）。"""
+        value = str(wxid or "")
+        return bool(
+            value
+            and value in self._nick_cache
+            and not value.endswith(GROUP_SUFFIX)
+            and not value.startswith("gh_")
+            and value not in self._PRIVATE_EXCLUDED
+            and value != self.self_wxid
+        )
+
+    def discover_private_sessions(self, limit: int = 1000) -> list[dict]:
+        """扫会话表取一对一私聊会话；**不刷新联系人快照**（低频发现专用）。"""
+        sessions = self.db.get_sessions(limit=limit) or []
+        return [s for s in sessions if isinstance(s, dict)
+                and self.is_private_contact(s.get("username") or "")]
+
+    def private_sessions(self, limit: int = 1000) -> list[dict]:
+        """Only actual one-to-one contact sessions; service accounts are excluded."""
+        self.refresh_private_contacts()
+        return self.discover_private_sessions(limit)
+
+    def _private_rows(self, wxid: str, since_seq: int) -> list[dict]:
+        # real_sender_id belongs to each message shard's Name2Id, NOT the
+        # unrelated message_resource.SenderName2Id numbering.
+        def read(tables):
+            messages = []
+            for conn, table in tables:
+                rows = self.db._shard_rows([(conn, table)], "WHERE sort_seq > ?",
+                    (since_seq,), order_ext=self.db._MSG_ORDER_ASC, per_shard_limit=200)
+                senders = {}
+                for row in rows:
+                    sid = row['real_sender_id']
+                    if sid not in senders:
+                        found = conn.execute('SELECT user_name FROM Name2Id WHERE rowid=?', (sid,)).fetchone()
+                        senders[sid] = str(found[0] or '') if found else ''
+                    item = self.db._msg_row_to_dict(row)
+                    item['sender_username'] = senders[sid]
+                    messages.append(item)
+            return sorted(messages, key=lambda item: item['sort_seq'])[:200]
+        return self.db._run_msg_query(wxid, read) or []
+
+    def new_private_messages(self, wxid: str, since_seq: int) -> list[dict]:
+        # Do not apply group prefix rules to private messages. Unknown direction
+        # is dropped rather than treating our own echo as a new activation/user turn.
+        result = []
+        for row in self._private_rows(wxid, since_seq):
+            sender = str(row.get("sender_username") or "")
+            if sender != wxid:
+                result.append({"seq": self._seq(row), "is_self": True})
+                continue
+            result.append({"seq": self._seq(row),
+                           "local_id": row.get("local_id") or row.get("localId") or row.get("id"),
+                           "type": str(row.get("type") or row.get("local_type") or ""),
+                           "sender_wxid": wxid, "sender_name": self.nick(wxid),
+                           "is_self": False,
+                           "text": ((row.get("content") or row.get("text") or "")
+                                    if isinstance(row.get("content") or row.get("text") or "", str)
+                                    else _zstd_text(row.get("content") or row.get("text"))),
+                           "raw": row})
+        return sorted(result, key=lambda m: m["seq"])
+
+    # ── 统一增量读取入口 ────────────────────────────────
+    def read_incremental(
+        self, conversation_type: str, ref: str, since_seq: int
+    ) -> list[dict]:
+        """按会话类型读取增量事件（群聊 / 已授权私聊同一入口）。
+
+        - 群聊：复用 `new_messages()`（含 sender 前缀归一化与自身消息过滤）；
+        - 私聊：复用 `new_private_messages()`（按消息分片的 Name2Id 判定真实发送者，
+          **不套用群聊的文本前缀规则**；方向未知的行返回 `is_self=True` 交给调用方
+          只推进水位、不分发）。
+
+        返回按 `seq` 升序；空列表表示没有新事件。查询异常由具体方法记日志后返回空表，
+        调用方不得把"读失败"当"没有新消息"写进日志之外的状态。
+        """
+        if conversation_type == "group":
+            return self.new_messages(str(ref), int(since_seq))
+        if conversation_type == "private":
+            return self.new_private_messages(str(ref), int(since_seq))
+        raise ValueError(f"unknown conversation_type: {conversation_type!r}")
 
     def _normalize(self, msg: dict, chat: str = "") -> dict:
         """把微信原始消息归一化。
@@ -411,11 +608,12 @@ class WeChatClient:
     def _media(self):
         """惰性创建图片解密器（构造 + 探测密钥有成本，启动时不付这个钱）。"""
         if self._md is None:
-            from wechatauto.media import MediaDownloader
+            from media_compat import BridgeMediaDownloader
 
-            self._md = MediaDownloader(self.db)
+            self._md = BridgeMediaDownloader(self.db)
             try:
-                log.info("图片解密密钥: %s", self._md.detect_image_key())
+                self._md.detect_image_key()
+                log.info("图片解密密钥探测完成")
             except Exception as e:  # noqa: BLE001
                 log.warning("图片解密密钥探测失败（微信需保持运行）: %s", e)
         return self._md
@@ -782,19 +980,62 @@ class WeChatClient:
         if mark is None:
             return SendResult("unknown", "已操作发送，但未取得发送前水位；不自动重发")
         deadline = time.time() + 8
+        attempt = 0
         try:
             while True:
                 if all(self.gui._verify_sent(part, group_name, mode=mode, after=mark) for part in parts):
                     return SendResult("sent", "数据库已确认")
                 if time.time() >= deadline:
                     return SendResult("unknown", "已操作发送，但数据库未确认；不自动重发")
-                time.sleep(1)
+                # 先快后慢，避免固定 1 秒起步的无谓等待；总上限仍是 8 秒。
+                time.sleep(self._CONFIRM_DELAYS[min(attempt, len(self._CONFIRM_DELAYS) - 1)])
+                attempt += 1
         except Exception as e:
             return SendResult("unknown", f"已操作发送，但回读失败：{e}；不自动重发")
 
     def note_self_image_sent(self, group_name: str, ttl: float = 45.0) -> None:
         if group_name:
             self._self_image_echo_until[group_name] = time.time() + max(5.0, ttl)
+
+    def _image_watermark(self, group_name: str):
+        try:
+            mark = self.gui._send_watermark(group_name)
+            if mark is None:
+                return None
+            chat = mark['username']
+            for row in self.db.get_messages(chat, limit=20) or []:
+                if '文本' in str(row.get('type') or ''):
+                    self._normalize(row, chat)
+            mark['self_senders'] = {sid for sid, identity in self._sid_map.get(chat, {}).items()
+                                    if identity[1] and identity[0] == self.self_wxid}
+            return mark
+        except Exception as exc:
+            log.debug('图片水位不可用：%s', type(exc).__name__)
+            return None
+
+    def _confirm_image_delivery(self, group_name: str, mark) -> SendResult:
+        if mark is None:
+            return SendResult('unknown', '图片已操作发送，但缺少发送前水位；不自动重发')
+        deadline = time.time() + 8
+        attempt = 0
+        try:
+            while time.time() < deadline:
+                for row in self.db.get_messages(mark['username'], limit=20) or []:
+                    seq = self._seq(row)
+                    key = (seq, int(row.get('local_id') or 0))
+                    if seq < mark['seq'] or key in mark['ids']:
+                        continue
+                    own = (row.get('sender_username') == self.self_wxid
+                           or row.get('sender_id') in mark.get('self_senders', set()))
+                    if '图片' in str(row.get('type') or '') and own:
+                        return SendResult('sent', '数据库已确认本会话水位后的自身图片消息')
+                if time.time() >= deadline:
+                    break
+                time.sleep(self._CONFIRM_DELAYS[min(attempt, len(self._CONFIRM_DELAYS) - 1)])
+                attempt += 1
+        except Exception as exc:
+            log.warning('图片发送回读失败：%s', type(exc).__name__)
+        return SendResult('unknown', '图片已操作发送，但数据库未确认；不自动重发')
 
     def consume_self_image_echo(
         self, group_name: str, sender_name: str = "", ttl: float = 45.0
@@ -816,41 +1057,38 @@ class WeChatClient:
     def download_file(
         self, group_id: str, local_id, filename: str | None = None,
         attempts: int = 6, delay: float = 0.8,
+        expected_size: int = 0, expected_md5: str = '', occurred_at: float = 0,
     ) -> str | None:
         """把微信收到的文件还原成本地文件；失败返回 None。
 
         微信 4.1 的文件消息有时用 local_id 查不到 49 类型行，且文件往往比
         消息晚约 1 秒才落到 `msg/file/YYYY-MM/<原名>`；按文件名轮询重试。
         """
-        try:
-            found = self._media().download_file(group_id, local_id)
-            if found:
-                return found
-        except Exception as e:  # noqa: BLE001
-            log.debug("标准文件下载失败（%s / local_id=%s）: %s", group_id, local_id, e)
+        from media_compat import find_download
         name = Path(str(filename or "")).name
         if not name:
             return None
         base = Path(str(getattr(self.db, "account_dir", ""))) / "msg" / "file"
         for attempt in range(max(1, int(attempts))):
             try:
-                hits = [p for p in base.rglob(name) if p.is_file()]
-                if hits:
-                    hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+                found = find_download(base, name, expected_size=expected_size,
+                                      expected_md5=expected_md5, occurred_at=occurred_at)
+                if found:
                     log.info(
                         "[文件] 按文件名找到本地副本：%s（第 %d 次）",
-                        hits[0],
+                        found,
                         attempt + 1,
                     )
-                    return str(hits[0])
+                    return found
             except Exception as e:  # noqa: BLE001
                 log.warning("按文件名找文件失败（%s）: %s", name, e)
             if attempt + 1 < attempts:
                 time.sleep(delay)
         return None
 
-    def _paste_image_fast(self, box, path: str) -> bool:
+    def _paste_image_fast(self, box, path: str, *, allow_monochrome_fallback: bool = False) -> bool:
         """快速粘贴图片：复用输入框，草稿只等 2 秒，失败回退标准路径。"""
+        self._paste_enter_attempted = False
         try:
             from wechatauto.guia import VK_A, VK_DELETE, VK_RETURN, VK_V
             from wechatauto.uia_driver import rhythm
@@ -858,12 +1096,13 @@ class WeChatClient:
             if not self.gui.focus_input(box):
                 log.info("[发图] fast-paste 失败：focus_input(%s) 未命中", box)
                 return False
-            copied = self.gui.copy_files_to_clipboard([path])
+            from media_compat import copy_image_to_clipboard
+            copied = copy_image_to_clipboard(path)
             if not copied:
                 # 微信刚读完上一次剪贴板时，OpenClipboard 可能短暂失败，重试几次即可
                 for _ in range(3):
                     time.sleep(0.2)
-                    if self.gui.copy_files_to_clipboard([path]):
+                    if copy_image_to_clipboard(path):
                         copied = True
                         break
             if not copied:
@@ -883,16 +1122,636 @@ class WeChatClient:
                     draft = self.gui._probe_input_box() is None
                 except Exception:  # noqa: BLE001
                     draft = False
-            if not draft:
+            if not draft and not allow_monochrome_fallback:
                 log.info("[发图] fast-paste 失败：1.2s 内未检测到草稿（box=%s）", box)
                 return False
+            # Preserve the proven private bitmap path for grayscale images:
+            # clipboard and focus succeeded, but the UI may expose no colour
+            # signal. One Enter, followed by DB confirmation; never resend.
             rhythm.gate("send")
+            self._paste_enter_attempted = True
             self.gui._input.key(VK_RETURN)
             rhythm.nap(0.15)
             return True
         except Exception as e:  # noqa: BLE001
             log.warning("[发图] fast-paste 异常: %s", e)
             return False
+
+    def _target_parts(self, group_name: str) -> tuple[str, str, str]:
+        """把发送目标拆成稳定类型/引用/展示名；昵称不是主键。"""
+
+        if group_name.startswith("private:"):
+            wxid = group_name[len("private:"):]
+            return "private", wxid, self.nick(wxid)
+        return "group", (self.group_id(group_name) or group_name), group_name
+
+    @staticmethod
+    def _window_identity(uia) -> tuple[str, str, int]:
+        win = getattr(uia, "_win", None) or getattr(uia, "_window", None)
+        handle = getattr(win, "NativeWindowHandle", None) or getattr(win, "handle", None)
+        name = getattr(win, "Name", "") or getattr(win, "name", "") or ""
+        # 窗口句柄优先；缺失时退化为当前 UIA 实例身份，绝不只凭昵称复用。
+        return (str(handle) if handle else "", str(name), 0 if handle else id(uia))
+
+    def _describe_target(self, group_name: str) -> SendTarget | None:
+        """把兼容入口键解析成统一目标描述；不合法（空、群 ID 当私聊）返回 None。"""
+        if not group_name:
+            return None
+        if group_name.startswith("private:"):
+            wxid = group_name[len("private:"):]
+            if not wxid or wxid.endswith(GROUP_SUFFIX) or wxid == self.self_wxid:
+                return None
+            return SendTarget(self.self_wxid, "private", wxid, self.nick(wxid), group_name)
+        return SendTarget(self.self_wxid, "group",
+                          self.group_id(group_name) or group_name, group_name, group_name)
+
+    @staticmethod
+    def _strip_chat_placeholder(text: str | None) -> str:
+        """标题清洗：只剥驱动已验证的占位符常量，见 `clean_chat_title()`。"""
+        return clean_chat_title(text)
+
+    def _display_is_unique(self, ref: str, display: str) -> bool:
+        if not display:
+            return False
+        duplicates = {key for key, value in self._nick_cache.items()
+                      if value == display and key != self.self_wxid}
+        return duplicates == {ref}
+
+    def _title_matches(self, target: dict, current: str | None) -> bool:
+        """当前标题（剥掉占位符尾巴后）是否仍等于已确认标题。
+
+        只做「整串相等」判定，不做前缀/包含匹配，所以「张三丰」永远不会被
+        当成「张三」；发送后输入框占位符变化由 `_strip_chat_placeholder`
+        的尾巴集合消化，尾巴只来自本目标发送成功后的观察。
+        """
+        clean = self._strip_chat_placeholder(current)
+        if not clean:
+            return False
+        title = self._strip_chat_placeholder(target.get("title"))
+        return bool(title) and clean == title
+
+    def _read_title(self, uia, *, attempts: int = 3, delay: float = 0.15) -> str:
+        """读当前会话标题；空值只做有限次重读，不因一次瞬时空值就去搜索会话。"""
+        current = ""
+        total = max(1, attempts)
+        for attempt in range(total):
+            try:
+                current = (uia.current_chat() or "").strip()
+            except Exception:  # noqa: BLE001
+                current = ""
+            if current:
+                return current
+            if attempt + 1 < total:
+                time.sleep(delay)
+        return current
+
+    @staticmethod
+    def _selected_chat_name(uia) -> tuple[bool, str]:
+        """Read the selected session cell, independent of the chat input name.
+
+        Return (supported, exact_name). An ambiguous or malformed selection
+        is not a reason to accept the input field as a substitute.
+        """
+        try:
+            win = getattr(uia, "_win", None)
+            if win is None or not hasattr(win, "ListControl"):
+                return False, ""
+            sessions = win.ListControl(AutomationId="session_list")
+            if not sessions.Exists(0.15, 0.05):
+                return False, ""
+            rows = [row for row in sessions.GetChildren()
+                    if row.GetPropertyValue(30079) == True]
+            if len(rows) != 1:
+                return True, ""
+            row = rows[0]
+            if getattr(row, "ClassName", "") != "mmui::ChatSessionCell":
+                return True, ""
+            aid = str(getattr(row, "AutomationId", "") or "")
+            lines = str(getattr(row, "Name", "") or "").splitlines()
+            name = lines[0].strip() if lines else ""
+            if name and aid == "session_item_" + name:
+                return True, name
+            return True, ""
+        except Exception:
+            return True, ""
+
+    def _current_target_matches(self, uia, display: str, *, private: bool) -> bool:
+        supported, selected = self._selected_chat_name(uia)
+        if supported:
+            return bool(selected) and selected == display
+        current = self._read_title(uia)
+        return (self._title_matches({"title": display}, current) if private
+                else self._same_chat(current, display))
+
+    @staticmethod
+    def _identity_change_reason(old_identity, identity) -> str:
+        reason = "window_identity_changed"
+        if isinstance(old_identity, tuple) and len(old_identity) == 3:
+            if old_identity[0] != identity[0]:
+                reason = "window_handle_changed"
+            elif old_identity[2] != identity[2]:
+                reason = "uia_instance_changed"
+            elif old_identity[1] != identity[1]:
+                reason = "window_name_changed"
+        return reason
+
+    def _confirmed_uia(self, group_name: str):
+        """复用已确认目标；失效只返回 None，由调用方决定是否安全定位。
+
+        命中条件（全部满足）：账号未变、会话类型与稳定引用一致、私聊展示名仍唯一、
+        窗口身份一致、当前标题仍属于该目标。300 秒到期只触发一次
+        「快照 + 唯一性 + 窗口 + 标题」复核，不搜索会话、不切换窗口。
+        窗口身份优先用真实窗口句柄，所以不同 UIA 包装实例指向同一窗口不算切换。
+        """
+        kind_label = "private" if group_name.startswith("private:") else "group"
+        def miss(reason):
+            log.info("[发送缓存] type=%s state=miss reason=%s", kind_label, reason)
+            self._last_miss_reason = reason
+            return None
+        target = self._confirmed_target
+        if not target:
+            return miss("empty")
+        if target.get("account") != self.self_wxid:
+            return miss("account_changed")
+        kind, ref, display = self._target_parts(group_name)
+        if target.get("kind") != kind or target.get("ref") != ref:
+            return miss("target_changed")
+        verified_at = float(target.get("verified_at") or 0)
+        stale = (not verified_at) or (time.time() - verified_at > self._TARGET_TTL)
+        if kind == "private":
+            if not display or display == ref or display == "unknown":
+                return miss("display_missing")
+            if target.get("display_name") != display:
+                return miss("display_changed")
+            if not self._display_is_unique(ref, display):
+                return miss("display_not_unique")
+        uia = self.gui._get_uia()
+        if uia is None:
+            return miss("uia_unavailable")
+        identity = self._window_identity(uia)
+        if target.get("window_identity") != identity:
+            return miss(self._identity_change_reason(target.get("window_identity"), identity))
+        if not self._current_target_matches(uia, display, private=kind == "private"):
+            return miss("title_changed")
+        if stale:
+            # 300 秒只做必要复核：私聊刷一次联系人快照并确认展示名仍唯一（数十毫秒），
+            # 继续复用窗口与输入框，不做 GUI 搜索、不切换窗口。
+            if kind == "private":
+                self.refresh_contacts()
+                fresh = self.nick(ref)
+                if fresh != display or not self._display_is_unique(ref, fresh):
+                    return miss("identity_revalidate_failed")
+                target["display_name"] = fresh
+            target["verified_at"] = time.time()
+        return uia
+
+    def _confirm_target(self, group_name: str, uia, *, input_box=None) -> bool:
+        """尝试把当前窗口登记为已确认目标；返回是否真的确认成功。
+
+        调用方必须检查返回值：确认失败（标题空、标题不等于目标展示名、私聊展示名
+        无法唯一对应）时不能继续发送，本方法也会清空旧目标与旧坐标。
+        """
+        kind, ref, display = self._target_parts(group_name)
+        title = display
+        title_ok = self._current_target_matches(uia, display, private=kind == "private")
+        if kind == "private":
+            title_ok = title_ok and self._display_is_unique(ref, display)
+        if not title_ok:
+            log.info("[发送缓存] type=%s state=store_rejected reason=%s", kind,
+                     "title_empty" if not title else "title_mismatch")
+            self._confirmed_target = None
+            self._last_input_box = None
+            self._last_input_group = ""
+            return False
+        if input_box is None:
+            # 只接受属于当前目标的遗留坐标；绝不把上一个会话的坐标写进新目标。
+            input_box = self._last_input_box if self._last_input_group == group_name else None
+        identity = self._window_identity(uia)
+        self._confirmed_target = {
+            "account": self.self_wxid, "kind": kind, "ref": ref,
+            "display_name": display, "title": title,
+            "window_identity": identity,
+            "verified_at": time.time(), "input_box": input_box,
+            "box_window": identity if input_box is not None else None,
+            "last_sent_at": 0.0,
+            "key": group_name,
+        }
+        if input_box is not None:
+            self._last_input_box = input_box
+            self._last_input_group = group_name
+            try:
+                self.gui._last_input_box = input_box
+            except Exception:  # noqa: BLE001
+                pass
+        return True
+
+    def _current_window_identity(self):
+        try:
+            uia = self.gui._get_uia()
+        except Exception:  # noqa: BLE001
+            return None
+        return self._window_identity(uia) if uia is not None else None
+
+    def _target_box(self, group_name: str):
+        """只返回属于同一已确认目标、同一窗口身份的坐标；否则当作坐标失效。
+
+        身份无法确认（拿不到窗口身份）时同样视为失效：宁可重新探测，也不用
+        可能属于别的会话的旧坐标。
+        """
+        target = self._confirmed_target
+        if not target or target.get("account") != self.self_wxid:
+            return None
+        if target.get("key") != group_name:
+            return None
+        kind, ref, _display = self._target_parts(group_name)
+        if target.get("kind") != kind or target.get("ref") != ref:
+            return None
+        if float(target.get("verified_at") or 0) <= 0:
+            return None
+        box = target.get("input_box")
+        if box is None:
+            return None
+        box_window = target.get("box_window")
+        current = self._current_window_identity()
+        if current is None or box_window is None or current != box_window:
+            # 窗口换过或无法确认：坐标作废；身份判定交给 `_confirmed_uia`。
+            self._invalidate_box(group_name)
+            return None
+        return box
+
+    def _window_identity_ok(self, uia, group_name: str) -> bool:
+        """本次要用的 UIA 包装、已确认目标、当前窗口三者身份是否一致。"""
+        target = self._confirmed_target
+        if not target or target.get("key") != group_name:
+            return False
+        if target.get("account") != self.self_wxid:
+            return False
+        identity = self._window_identity(uia) if uia is not None else None
+        current = self._current_window_identity()
+        stored = target.get("window_identity")
+        return (identity is not None and current is not None
+                and identity == current == stored)
+
+    def _invalidate_box(self, group_name: str) -> None:
+        """作废已确认目标的坐标归属（窗口身份变了或确认不了时用）。"""
+        target = self._confirmed_target
+        if target and target.get("key") == group_name:
+            target["input_box"] = None
+            target["box_window"] = None
+        if self._last_input_group == group_name:
+            self._last_input_box = None
+            self._last_input_group = None
+            try:
+                self.gui._last_input_box = None
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _ensure_box(self, uia, group_name: str):
+        """返回属于「当前可信窗口」的输入框坐标；窗口身份确认不了就返回 None。
+
+        取坐标前后各核对一次窗口身份：探测期间窗口被重建/切换时，刚拿到的坐标
+        同样不可信，直接作废，让调用方走安全定位。
+        """
+        identity = self._window_identity(uia) if uia is not None else None
+        current = self._current_window_identity()
+        if identity is None or current is None or identity != current:
+            self._invalidate_box(group_name)
+            return None
+        box = self._target_box(group_name)
+        if box is not None:
+            return box
+        self._cache_input_box(uia, group_name)
+        after = self._current_window_identity()
+        if after is None or after != identity:
+            self._invalidate_box(group_name)
+            return None
+        box = self._last_input_box if self._last_input_group == group_name else None
+        if box is None:
+            return None
+        self._update_target_box(group_name, box)
+        return box
+
+    def _touch_target(self, group_name: str) -> None:
+        """发送成功后只记“最近发送时间”，**绝不延长身份复核期限**。
+
+        `verified_at` 只由初次可靠确认或 300 秒一次的联系人身份复核更新；
+        持续聊天不能因此跳过复核（R04）。
+        """
+        target = self._confirmed_target
+        if not target or target.get("key") != group_name:
+            return
+        if target.get("account") != self.self_wxid:
+            return
+        target["last_sent_at"] = time.time()
+
+    def _resolve_send_target(self, group_name: str, *, locate: bool = True):
+        """统一目标解析：先复用已确认目标，必要时按类型安全定位。
+
+        返回 ``(uia, 输入框坐标, 是否命中缓存, 原因)``；原因取值为
+        ``hit / box_missing / located / need_switch / target_invalid / locate_failed``
+        或最近一次缓存失效原因。群聊的「切换会话」仍交给 ``gui.send_msg`` 适配层，
+        私聊只走 UIA 安全定位，绝不把私聊当作群 ID 处理。
+        """
+        target = self._describe_target(group_name)
+        if target is None:
+            return None, None, False, "target_invalid"
+        uia = self._confirmed_uia(group_name)
+        if uia is not None:
+            box = self._ensure_box(uia, group_name)
+            if box is not None:
+                return uia, box, True, "hit"
+            if self._window_identity_ok(uia, group_name):
+                # 身份仍可信，只是这次拿不到坐标：文本可直发，图片由调用方走安全定位。
+                return uia, None, True, "box_missing"
+            # 连窗口身份都确认不了：本次不复用，需要时重新安全定位。
+            self._invalidate_box(group_name)
+            if not locate:
+                return None, None, False, "window_unverified"
+        if not locate:
+            return None, None, False, self._last_miss_reason or "miss"
+        if target.is_private:
+            uia = self._private_open(target.ref)
+            if uia is None:
+                return None, None, False, "locate_failed"
+            box = self._ensure_box(uia, group_name)
+            # 定位成功不等于身份确认成功：确认失败时禁止发送，也不留旧坐标。
+            if not self._confirm_target(group_name, uia, input_box=box):
+                return None, None, False, "target_unconfirmed"
+            return uia, box, False, "located"
+        return None, None, False, "need_switch"
+
+    @staticmethod
+    def _ms_label(value) -> str:
+        return "unavailable" if value is None else str(max(0, int(value)))
+
+    def _log_send_timing(self, *, op: str, group_name: str, cache_hit: bool,
+                         state: str, target_ms=None, gui_ms=None,
+                         confirm_ms=None, total_ms=None, reason: str = "") -> None:
+        kind, _ref, _display = self._target_parts(group_name)
+        known = [value for value in (target_ms, gui_ms, confirm_ms) if value is not None]
+        total = total_ms if total_ms is not None else (
+            sum(known) if len(known) == 3 else None)
+        log.info(
+            "[发送计时] op=%s type=%s cache_hit=%s target_ms=%s gui_ms=%s "
+            "confirm_ms=%s total_ms=%s state=%s reason=%s",
+            op, kind, bool(cache_hit), self._ms_label(target_ms),
+            self._ms_label(gui_ms), self._ms_label(confirm_ms),
+            self._ms_label(total), state, reason or "none",
+        )
+
+    def _paste_image_shared(self, box, path: str, *, probe: bool, allow_monochrome_fallback: bool = False):
+        """群/私聊共用的位图粘贴：先按需探测，失败只在未发送阶段重定位一次。"""
+
+        if probe:
+            try:
+                fresh = self.gui._probe_input_box()
+            except Exception:  # noqa: BLE001
+                fresh = None
+            if fresh and fresh != box:
+                box = fresh
+        if (self._paste_image_fast(box, path, allow_monochrome_fallback=True)
+                if allow_monochrome_fallback else self._paste_image_fast(box, path)):
+            return box, True
+        if getattr(self, "_paste_enter_attempted", False):
+            # 已经按过回车，结果不确定；不允许换坐标重试，避免同一张图发两次。
+            return box, False
+        # _paste_image_fast 返回 False 时尚未按回车；重新定位是安全的准备阶段动作。
+        try:
+            fresh = self.gui._probe_input_box()
+        except Exception:  # noqa: BLE001
+            fresh = None
+        if fresh and fresh != box and (self._paste_image_fast(fresh, path, allow_monochrome_fallback=True)
+                                        if allow_monochrome_fallback else self._paste_image_fast(fresh, path)):
+            return fresh, True
+        return box, False
+
+    def _private_open(self, wxid: str):
+        """按稳定 wxid 安全定位私聊；展示名歧义一律拒绝。
+
+        与旧实现的区别：不再每次全量 ``refresh_contacts()``——只有联系人快照里
+        没有这个 wxid（冷启动、新好友、改名）或定位失败时才刷新一次；当前窗口
+        已经是该会话时直接复用，不进搜索界面。
+        """
+        if not wxid or wxid.endswith(GROUP_SUFFIX) or wxid == self.self_wxid:
+            return None
+        for attempt in range(2):
+            name = self._nick_cache.get(wxid) or ""
+            if not name or name == wxid or name == "unknown":
+                name = self._refresh_private_name(wxid)
+                if not name:
+                    return None
+            # 定向校验：快照内同名 + 会话检索同名，都只能命中这一个 wxid。
+            matches = {key for key, value in self._nick_cache.items()
+                       if value == name and key != self.self_wxid}
+            matches.update(str(item.get("username") or "")
+                           for item in self.db.search_contact(name) or [])
+            matches.discard("")
+            if matches != {wxid}:
+                # 绝不选中第一个同名结果（含同名群）；快照可能过期，最多刷新重试一次。
+                if attempt == 0:
+                    self.refresh_contacts()
+                    continue
+                return None
+            uia = self.gui._get_uia()
+            if uia is None:
+                return None
+            # 稳定身份已唯一确认：当前窗口若已经是这个会话，就不进搜索界面。
+            if self._current_target_matches(uia, name, private=True):
+                return uia
+            if uia.open_chat(name) and self._current_target_matches(uia, name, private=True):
+                return uia
+            # 打开失败或标题不符：可能是联系人改名，刷新快照后最多重试一次。
+            if attempt == 0:
+                self.refresh_contacts()
+                continue
+            return None
+        return None
+
+    def _refresh_private_name(self, wxid: str) -> str:
+        """只在快照里查不到该 wxid 时刷新一次；查不到合法展示名返回空串。"""
+        self.refresh_contacts()
+        name = self.nick(wxid)
+        if not name or name == wxid or name == "unknown":
+            return ""
+        return name
+
+    def _update_target_box(self, group_name: str, box) -> None:
+        """更新已确认目标的坐标归属，并把坐标所属窗口一并记下。"""
+
+        target = self._confirmed_target
+        if not target or target.get("key") != group_name:
+            return
+        if target.get("account") != self.self_wxid:
+            return
+        kind, ref, _display = self._target_parts(group_name)
+        if target.get("kind") != kind or target.get("ref") != ref:
+            return
+        target["input_box"] = box
+        if box is not None:
+            # 坐标只能在“当前窗口身份 == 已登记的窗口身份”时登记；否则宁可丢弃，
+            # 避免出现「旧身份 + 新坐标」这种混合状态。
+            current = self._current_window_identity()
+            if current is None or target.get("window_identity") != current:
+                target["input_box"] = None
+                target["box_window"] = None
+                return
+            target["box_window"] = current
+            self._last_input_box = box
+            self._last_input_group = group_name
+            try:
+                self.gui._last_input_box = box
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            target["box_window"] = None
+
+    def _private_target(self, wxid: str):
+        """兼容入口：统一解析私聊目标，返回 (uia, 输入框, 是否命中缓存)。"""
+
+        uia, box, cache_hit, _reason = self._resolve_send_target("private:" + wxid)
+        return uia, box, cache_hit
+
+    def _confirm_send(self, group_name: str, op: str, mark, *,
+                      text: str | None = None) -> SendResult:
+        """统一投递确认调度：按会话类型查询各自消息流水。
+
+        语义保持 `sent / failed / unknown`：确认不到就是 `unknown`，不伪造成功，
+        也不因为没确认而自动重发。群聊与私聊只是查询适配器不同。
+        """
+        target = self._describe_target(group_name)
+        if target is not None and target.is_private:
+            return self._private_confirm(target.ref, mark, text=text)
+        if op == "image":
+            return self._confirm_image_delivery(group_name, mark)
+        if mark is None:
+            return SendResult("unknown", "已操作发送，但未取得发送前水位；不自动重发")
+        return self._confirm_delivery([text or ""], group_name, mark, "exact")
+
+    def _private_mark(self, wxid: str) -> dict:
+        rows = self.db.get_messages(wxid, limit=5) or []
+        return {"username": wxid, "seq": max((self._seq(row) for row in rows), default=0),
+                "ids": {(self._seq(row), row.get("local_id")) for row in rows}}
+
+    def _private_confirm(self, wxid: str, mark: dict, *, text: str | None = None) -> SendResult:
+        deadline = time.time() + 8
+        attempt = 0
+        while True:
+            for row in self._private_rows(wxid, max(0, mark["seq"] - 1)):
+                if self._seq(row) < mark["seq"] or (self._seq(row), row.get("local_id")) in mark["ids"]:
+                    continue
+                if row.get("sender_username") != self.self_wxid:
+                    continue
+                if text is not None and row.get("content") == text:
+                    return SendResult("sent", "private_db_confirmed")
+                if text is None and "图片" in str(row.get("type") or ""):
+                    return SendResult("sent", "private_image_db_confirmed")
+            if time.time() >= deadline:
+                break
+            # 先快后慢：消息通常 0.2~0.5 秒内落库，避免固定 0.5 秒起步的等待。
+            time.sleep(self._CONFIRM_DELAYS[min(attempt, len(self._CONFIRM_DELAYS) - 1)])
+            attempt += 1
+        return SendResult("unknown", "private_delivery_unconfirmed; do_not_retry")
+
+    def _send_private_text(self, wxid: str, text: str) -> SendResult:
+        key = "private:" + wxid
+        started = time.perf_counter()
+        cache_hit = False
+        reason = ""
+        try:
+            mark = self._private_mark(wxid)
+            uia, box, cache_hit, reason = self._resolve_send_target(key)
+            target_ms = int((time.perf_counter() - started) * 1000)
+            if uia is None:
+                self._log_send_timing(op="text", group_name=key, cache_hit=cache_hit,
+                                      state="failed", target_ms=target_ms, reason=reason)
+                return SendResult("failed", "private_target_not_unique_or_not_open")
+            t_send = time.perf_counter()
+            if not uia.send_text(text):
+                self._log_send_timing(op="text", group_name=key, cache_hit=cache_hit,
+                                      state="unknown", target_ms=target_ms,
+                                      gui_ms=int((time.perf_counter() - t_send) * 1000),
+                                      reason=reason)
+                return SendResult("unknown", "private_send_unconfirmed; do_not_retry")
+            gui_ms = int((time.perf_counter() - t_send) * 1000)
+            if box is None:
+                box = self._ensure_box(uia, key)
+            self._update_target_box(key, box)
+            t_confirm = time.perf_counter()
+            outcome = self._confirm_send(key, "text", mark, text=text)
+            self._touch_target(key)
+            self._log_send_timing(
+                op="text", group_name=key, cache_hit=cache_hit, state=outcome.state,
+                target_ms=target_ms, gui_ms=gui_ms,
+                confirm_ms=int((time.perf_counter() - t_confirm) * 1000),
+                total_ms=int((time.perf_counter() - started) * 1000), reason=reason)
+            return outcome
+        except Exception as exc:
+            self._log_send_timing(op="text", group_name=key, cache_hit=cache_hit,
+                                  state="unknown",
+                                  total_ms=int((time.perf_counter() - started) * 1000),
+                                  reason=reason or "exception")
+            return SendResult("unknown", "private_send_error:" + type(exc).__name__)
+
+    def _send_private_image(self, wxid: str, path: str, *, probe: bool = True) -> SendResult:
+        p = Path(path)
+        if not p.is_file() or p.stat().st_size <= 0:
+            return SendResult('failed', 'private_image_missing')
+        key = "private:" + wxid
+        started = time.perf_counter()
+        cache_hit = False
+        reason = ""
+        try:
+            # 紧跟文字之后（probe=False）：只复用已确认目标，不重置前台窗口。
+            uia = box = None
+            if not probe:
+                uia, box, cache_hit, reason = self._resolve_send_target(key, locate=False)
+            if uia is None or box is None:
+                if not self.gui.ensure_visible():
+                    self._log_send_timing(op="image", group_name=key, cache_hit=cache_hit,
+                                          state="failed", reason=reason or "window_unavailable")
+                    return SendResult('failed', 'private_image_window_unavailable')
+                uia, box, cache_hit, reason = self._resolve_send_target(key)
+            target_ms = int((time.perf_counter() - started) * 1000)
+            if uia is None:
+                self._log_send_timing(op="image", group_name=key, cache_hit=cache_hit,
+                                      state="failed", target_ms=target_ms, reason=reason)
+                return SendResult('failed', 'private_target_not_unique_or_not_open')
+            if box is None:
+                box = self._ensure_box(uia, key)
+            if box is None:
+                self._log_send_timing(op="image", group_name=key, cache_hit=cache_hit,
+                                      state="failed", target_ms=target_ms, reason="box_missing")
+                return SendResult('failed', 'private_image_input_unavailable')
+            mark = self._private_mark(wxid)
+            t_paste = time.perf_counter()
+            box, pasted = self._paste_image_shared(box, str(p), probe=probe, allow_monochrome_fallback=True)
+            gui_ms = int((time.perf_counter() - t_paste) * 1000)
+            if not pasted:
+                state = "unknown" if getattr(self, "_paste_enter_attempted", False) else "failed"
+                self._log_send_timing(op="image", group_name=key, cache_hit=cache_hit,
+                                      state=state, target_ms=target_ms, gui_ms=gui_ms,
+                                      reason=reason)
+                return SendResult(state, "private_image_paste_unconfirmed"
+                                  if state == "unknown" else "private_image_paste_failed")
+            self._update_target_box(key, box)
+            t_confirm = time.perf_counter()
+            outcome = self._confirm_send(key, "image", mark)
+            self._touch_target(key)
+            if outcome.state != 'sent':
+                log.warning('private_image_delivery_unconfirmed')
+            self._log_send_timing(
+                op="image", group_name=key, cache_hit=cache_hit, state=outcome.state,
+                target_ms=target_ms, gui_ms=gui_ms,
+                confirm_ms=int((time.perf_counter() - t_confirm) * 1000),
+                total_ms=int((time.perf_counter() - started) * 1000), reason=reason)
+            return outcome
+        except Exception as exc:
+            log.warning('private_image_error:%s', type(exc).__name__)
+            self._log_send_timing(op="image", group_name=key, cache_hit=cache_hit,
+                                  state="unknown",
+                                  total_ms=int((time.perf_counter() - started) * 1000),
+                                  reason=reason or "exception")
+            return SendResult('unknown', 'private_image_error:' + type(exc).__name__)
 
     def send_image(self, group_name: str, path: str,
                    verify: bool | None = None, probe: bool = True) -> SendResult:
@@ -901,78 +1760,114 @@ class WeChatClient:
         ``probe=False``：紧跟在文字之后发图时使用。输入框坐标刚由 ``send_text``
         缓存并验证过，再做一次 ``_probe_input_box`` 只是白花 0.2–0.5 秒（2026-11-09）。
         """
+        if group_name.startswith("private:"):
+            return self._send_private_image(group_name[len("private:"):], path, probe=probe)
         p = Path(path)
         if not p.is_file() or p.stat().st_size <= 0:
             return SendResult("failed", f"图片不存在：{path}")
         verify_final = self.verify_send if verify is None else bool(verify)
         # 必须在发送动作之前打标记：微信可能在 UIA 回车过程中就把自发图片读回来。
         self.note_self_image_sent(group_name)
-        # 当前会话直发：跳过 gui.send_image 的 open_chat/布局重校准。
-        # 微信发图慢的主要原因是“先切会话再校准输入框”，不是文件 IO。
-        if not verify_final:
+        # 回读确认与发送方式分开：开启确认也使用刚发文字时的真实输入框。
+        image_mark = self._image_watermark(group_name) if verify_final else None
+        started = time.perf_counter()
+        cache_hit = False
+        target_ms = None
+        attempted = False
+        if callable(getattr(self.gui, "_get_uia", None)):
             try:
-                uia = self.gui._get_uia()
-                cur = uia.current_chat() if uia is not None else None
-                if cur and self._same_chat(cur, group_name):
-                    box = (
-                        self._last_input_box
-                        if self._last_input_group == group_name
-                        else None
-                    )
+                # 与文字共用同一目标解析：命中只复用坐标，未命中才看当前窗口。
+                uia, box, cache_hit, _reason = self._resolve_send_target(
+                    group_name, locate=False)
+                if uia is None:
+                    uia = self.gui._get_uia()
+                    if not (uia is not None and self._current_target_matches(uia, group_name, private=False)):
+                        uia = None
+                target_ms = int((time.perf_counter() - started) * 1000)
+                if uia is not None:
+                    # 只使用属于当前已确认目标的坐标；没有就现场重新探一次（不沿用缓存）。
                     if box is None:
-                        # wechatauto 自己也有最近成功发送的输入框缓存，优先复用，
-                        # 避免每次发图都做 6 次探针 + 重校准。
-                        box = getattr(self.gui, "_last_input_box", None)
-                    if box is None:
-                        box = self.gui.get_input_box()
-                    # 缓存只用于省掉完整探测；窗口移动/布局漂移后坐标会失效，
-                    # 发图前做一次轻量探测校正，避免带着旧坐标掉进 3×6s 慢路径。
-                    # probe=False（紧跟文字发图）时跳过：坐标刚被 send_text 缓存。
-                    try:
-                        fresh = self.gui._probe_input_box() if probe else None
-                    except Exception:  # noqa: BLE001
-                        fresh = None
-                    if fresh and fresh != box:
-                        log.info(
-                            "[发图] 输入框坐标已变化，改用新坐标：cache=%s fresh=%s",
-                            box, fresh,
-                        )
-                        box = fresh
-                    if box and self._paste_image_fast(box, str(p)):
-                        self.gui._current_chat = group_name
-                        self._last_input_box = box
-                        self._last_input_group = group_name
-                        self.note_self_image_sent(group_name)
-                        log.info(
-                            "[发送图片] %s（%s，%d 字节，fast-paste）",
-                            group_name,
-                            p.name,
-                            p.stat().st_size,
-                        )
-                        return SendResult("sent", "当前会话快速发图")
-                    if box and self.gui._paste_attachment_and_send(str(p), box):
-                        self.gui._current_chat = group_name
-                        self._last_input_box = box
-                        self._last_input_group = group_name
-                        self.note_self_image_sent(group_name)
-                        log.info(
-                            "[发送图片] %s（%s，%d 字节，current-direct）",
-                            group_name,
-                            p.name,
-                            p.stat().st_size,
-                        )
-                        return SendResult("sent", "当前会话直发")
+                        box = self.gui._probe_input_box() if callable(
+                            getattr(self.gui, "_probe_input_box", None)) else None
+                    if box:
+                        attempted = True
+                        t_paste = time.perf_counter()
+                        box, pasted = self._paste_image_shared(box, str(p), probe=probe)
+                        gui_ms = int((time.perf_counter() - t_paste) * 1000)
+                        if pasted:
+                            self.gui._current_chat = group_name
+                            self._confirm_target(group_name, uia, input_box=box)
+                            self.note_self_image_sent(group_name)
+                            t_confirm = time.perf_counter()
+                            outcome = (self._confirm_send(group_name, "image", image_mark)
+                                       if verify_final else SendResult("sent", "当前会话位图发图"))
+                            self._touch_target(group_name)
+                            self._log_send_timing(
+                                op="image", group_name=group_name, cache_hit=cache_hit,
+                                state=outcome.state, target_ms=target_ms, gui_ms=gui_ms,
+                                confirm_ms=int((time.perf_counter() - t_confirm) * 1000),
+                                total_ms=int((time.perf_counter() - started) * 1000))
+                            return outcome
+                        if getattr(self, "_paste_enter_attempted", False):
+                            # 已按回车但没有确认：立即结束，绝不走备用方法。
+                            self._log_send_timing(
+                                op="image", group_name=group_name, cache_hit=cache_hit,
+                                state="unknown", target_ms=target_ms, gui_ms=gui_ms,
+                                total_ms=int((time.perf_counter() - started) * 1000))
+                            return SendResult("unknown", "图片已操作发送但未确认；不自动重发")
+                        # 尚未按回车：只允许一次受控慢速回退；其 False/异常均按 unknown。
+                        t_fallback = time.perf_counter()
+                        try:
+                            fallback_ok = bool(self.gui._paste_attachment_and_send(str(p), box))
+                        except Exception:  # noqa: BLE001
+                            fallback_ok = None
+                        fallback_ms = int((time.perf_counter() - t_fallback) * 1000)
+                        if fallback_ok is True:
+                            self.gui._current_chat = group_name
+                            self._confirm_target(group_name, uia, input_box=box)
+                            self.note_self_image_sent(group_name)
+                            t_confirm = time.perf_counter()
+                            outcome = (self._confirm_send(group_name, "image", image_mark)
+                                       if verify_final else SendResult("sent", "当前会话直发"))
+                            self._touch_target(group_name)
+                            self._log_send_timing(
+                                op="image", group_name=group_name, cache_hit=cache_hit,
+                                state=outcome.state, target_ms=target_ms,
+                                gui_ms=gui_ms + fallback_ms,
+                                confirm_ms=int((time.perf_counter() - t_confirm) * 1000),
+                                total_ms=int((time.perf_counter() - started) * 1000))
+                            return outcome
+                        # 备用方法没有明确成功：保守 unknown，不再调用 gui.send_image。
+                        self._log_send_timing(
+                            op="image", group_name=group_name, cache_hit=cache_hit,
+                            state="unknown", target_ms=target_ms,
+                            gui_ms=gui_ms + fallback_ms,
+                            total_ms=int((time.perf_counter() - started) * 1000))
+                        return SendResult("unknown", "备用图片粘贴未确认；不自动重发")
+                    # 目标已确认但没有可用坐标：没有发生发送动作，允许走唯一的公开发送路径。
             except Exception as e:  # noqa: BLE001
+                if attempted or getattr(self, "_paste_enter_attempted", False):
+                    self._log_send_timing(
+                        op="image", group_name=group_name, cache_hit=cache_hit,
+                        state="unknown", target_ms=target_ms,
+                        total_ms=int((time.perf_counter() - started) * 1000))
+                    return SendResult("unknown", "图片发送异常且可能已操作；不自动重发")
                 log.debug("图片当前会话直发失败，回退 gui.send_image: %s", e)
         try:
+            t_primary = time.perf_counter()
             resp = self.gui.send_image(
                 str(p),
                 group_name,
                 verify=verify_final,
             )
+            gui_ms = int((time.perf_counter() - t_primary) * 1000)
             outcome = SendResult.from_gui(resp)
             if outcome:
                 self.note_self_image_sent(group_name)
+            self._log_send_timing(
+                op="image", group_name=group_name, cache_hit=cache_hit,
+                state=outcome.state, target_ms=target_ms, gui_ms=gui_ms,
+                total_ms=int((time.perf_counter() - started) * 1000))
             log.info(
                 "[发送图片] %s（%s，%d 字节）: %s",
                 group_name,
@@ -983,6 +1878,10 @@ class WeChatClient:
             return outcome
         except Exception as e:  # noqa: BLE001
             log.warning("发送图片异常 %s: %s", path, e)
+            self._log_send_timing(
+                op="image", group_name=group_name, cache_hit=cache_hit,
+                state="unknown", target_ms=target_ms,
+                total_ms=int((time.perf_counter() - started) * 1000))
             return SendResult("unknown", f"发送图片异常：{e}")
 
     def ensure_visible(self) -> bool:
@@ -1010,14 +1909,15 @@ class WeChatClient:
             t_text = time.time()
             result = self.send_text(group_name, body)
             text_ms = int((time.time() - t_text) * 1000)
-            # unknown 也按“可能已发出”处理，避免插件把同一段文字再发一次。
-            sent_text = result.state in ("sent", "unknown")
-            if not sent_text:
+            # unknown 不能当作已发送；也不继续发图，避免文字未确认时追加媒体。
+            if result.state != "sent":
                 return {
                     "ok": False,
                     "sent_text": False,
-                    "error": f"文字发送失败：{result.detail or result.state}",
+                    "text_state": result.state,
+                    "error": f"文字未确认，未继续发送图片：{result.detail or result.state}",
                 }
+            sent_text = True
         t_img = time.time()
         image_result = self.send_image(group_name, path, probe=False)
         img_ms = int((time.time() - t_img) * 1000)
@@ -1039,7 +1939,12 @@ class WeChatClient:
 
     def _cache_input_box(self, uia, group_name: str) -> None:
         """文字发完后缓存输入框坐标，紧接着发图时不再重新探测/校准。"""
+        # A failed fresh probe must never leave another conversation's box in
+        # the shared cache; callers may immediately inspect _last_input_box.
+        self._last_input_box = None
+        self._last_input_group = None
         try:
+            self.gui._last_input_box = None
             edit = uia._chat_input(getattr(uia, "_win", None))
             rect = edit.BoundingRectangle
             ox = int(getattr(self.gui, "origin_x", 0))
@@ -1050,10 +1955,15 @@ class WeChatClient:
                 int(rect.right) - ox,
                 int(rect.bottom) - oy,
             )
+            if box[2] <= box[0] or box[3] <= box[1]:
+                raise ValueError("invalid_input_rectangle")
             self._last_input_box = box
             self._last_input_group = group_name
             self.gui._last_input_box = box
         except Exception as e:  # noqa: BLE001
+            target = self._confirmed_target
+            if target and target.get("key") == group_name:
+                target["input_box"] = None
             log.debug("缓存输入框坐标失败: %s", e)
 
     def send_text(self, group_name: str, text: str) -> SendResult:
@@ -1066,55 +1976,89 @@ class WeChatClient:
         它的成功路径不打日志，行为不可观测，出问题时无法定位。
         顺带这也省掉了它内部重复的一次 `current_chat()` 探测。
         """
+        if group_name.startswith("private:"):
+            return self._send_private_text(group_name[len("private:"):], text)
         import time as _t
         t0 = _t.time()
         cur: str | None = None
         same = False
         uia = None
+        cache_hit = False
+        reason = ""
         try:
-            uia = self.gui._get_uia()
+            # 与图片共用同一目标解析：命中直接复用窗口/坐标，未命中才看当前窗口。
+            uia, _box, cache_hit, reason = self._resolve_send_target(group_name, locate=False)
             if uia is not None:
-                cur = uia.current_chat()
-                same = self._same_chat(cur, group_name)
+                same = True
+            else:
+                uia = self.gui._get_uia()
+                if uia is not None:
+                    same = self._current_target_matches(uia, group_name, private=False)
         except Exception as e:  # noqa: BLE001
             log.debug("探测当前会话失败: %s", e)
             uia = None
 
         t_probe = _t.time() - t0
-        via = "direct" if (same and uia is not None) else "switch"
+        gui_ms = None
+        confirm_ms = None
         try:
             can_confirm = callable(getattr(self.gui, "_send_watermark", None)) and callable(
                 getattr(self.gui, "_verify_sent", None))
             if same and uia is not None and (not self.verify_send or can_confirm):
                 # 当前会话直发，确认也不切换会话。False可能发生于回车阶段。
                 mark = self.gui._send_watermark(group_name) if self.verify_send else None
-                if not uia.send_text(text):
+                t_gui = _t.perf_counter()
+                sent = uia.send_text(text)
+                gui_ms = int((_t.perf_counter() - t_gui) * 1000)
+                if not sent:
                     ok = SendResult("unknown", "UIA未确认发送结果，已停止自动重发")
                 elif self.verify_send:
-                    ok = self._confirm_delivery([text], group_name, mark, "exact")
+                    t_confirm = _t.perf_counter()
+                    ok = self._confirm_send(group_name, "text", mark, text=text)
+                    confirm_ms = int((_t.perf_counter() - t_confirm) * 1000)
                 else:
                     ok = SendResult("sent")
+                    confirm_ms = 0
             else:
+                t_gui = _t.perf_counter()
                 ok = SendResult.from_gui(self.gui.send_msg(text, group_name, self.verify_send))
+                gui_ms = int((_t.perf_counter() - t_gui) * 1000)
+                # 切换路径内部包含发送与可选确认，无法拆分；confirm 明确 unavailable。
         except Exception as e:  # noqa: BLE001
             log.error("发送结果不确定(%s): %s", group_name, e)
+            self._log_send_timing(
+                op="text", group_name=group_name, cache_hit=cache_hit, state="unknown",
+                target_ms=int(t_probe * 1000), gui_ms=gui_ms,
+                total_ms=int((_t.time() - t0) * 1000), reason=reason or "exception")
             return SendResult("unknown", str(e))
         if not ok:
             log.warning("[发送未确认] %s: state=%s %s", group_name, ok.state, ok.detail)
+            self._log_send_timing(
+                op="text", group_name=group_name, cache_hit=cache_hit, state=ok.state,
+                target_ms=int(t_probe * 1000), gui_ms=gui_ms, confirm_ms=confirm_ms,
+                total_ms=int((_t.time() - t0) * 1000), reason=reason)
             return ok
-        if uia is not None and via == "direct":
-            self._cache_input_box(uia, group_name)
+        if uia is not None and same:
+            if cache_hit:
+                # 本轮开始时身份与坐标都刚校验过：只刷新复核时间，不重复探测。
+                self._touch_target(group_name)
+            else:
+                self._cache_input_box(uia, group_name)
+                self._confirm_target(group_name, uia)
+        elif ok.state == "sent":
+            # 切换路径成功后重新读取 UIA，只有真实当前会话一致才写入目标缓存。
+            try:
+                switched = self.gui._get_uia()
+                if switched is not None and self._current_target_matches(switched, group_name, private=False):
+                    self._cache_input_box(switched, group_name)
+                    self._confirm_target(group_name, switched)
+            except Exception:  # noqa: BLE001
+                pass
 
-        log.info(
-            "[发送] %s: %s (探测 %.2fs + 发送 %.2fs, 当前会话=%r, 同名=%s, 路径=%s)",
-            group_name,
-            text[:40],
-            t_probe,
-            _t.time() - t0 - t_probe,
-            cur,
-            same,
-            via,
-        )
+        self._log_send_timing(
+            op="text", group_name=group_name, cache_hit=cache_hit, state=ok.state,
+            target_ms=int(t_probe * 1000), gui_ms=gui_ms, confirm_ms=confirm_ms,
+            total_ms=int((_t.time() - t0) * 1000), reason=reason)
         return ok
 
     def _uia_input_at(self, uia, edit, member: str, clear_first: bool = True) -> bool:
@@ -1441,6 +2385,7 @@ class WeChatClient:
             log.warning("UIA 发送结果不确定: %s", e)
             return SendResult("unknown", str(e))
         self._cache_input_box(uia, group_name)
+        self._confirm_target(group_name, uia)
 
         if self.verify_send:
             # @ tokens split before/after in the DB; verify both text portions after the watermark.
@@ -1596,6 +2541,7 @@ class WeChatClient:
             log.warning("UIA 发送结果不确定: %s", e)
             return SendResult("unknown", str(e))
         self._cache_input_box(uia, group_name)
+        self._confirm_target(group_name, uia)
 
         if self.verify_send:
             check = [p.strip() for p in text_parts if p.strip()]

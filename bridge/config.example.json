@@ -16,7 +16,13 @@
     "image_cache_keep": -1,
     "db_dir": "",
     "max_mentions": 3,
-    "image_carry_seconds": 30.0
+    "image_carry_seconds": 30.0,
+    "read_batch": 50,
+    "dispatch_queue_max": 200,
+    "metrics_log_seconds": 30.0,
+    "dispatch_max_attempts": 3,
+    "dispatch_retry_base": 0.5,
+    "dispatch_retry_max": 10.0
   },
   "website": {
     "enabled": true,
@@ -25,11 +31,26 @@
     "browser_channel": "msedge",
     "search_engine": "bing",
     "allowed_domains": [
-      "baidu.com", "amap.com", "gov.cn", "people.com.cn", "xinhuanet.com",
-      "ctrip.com", "mafengwo.cn", "12306.cn", "github.com", "wikipedia.org", "wikimedia.org"
+      "baidu.com",
+      "amap.com",
+      "gov.cn",
+      "people.com.cn",
+      "xinhuanet.com",
+      "ctrip.com",
+      "mafengwo.cn",
+      "12306.cn",
+      "github.com",
+      "wikipedia.org",
+      "wikimedia.org"
     ]
   },
   "logging": {
     "level": "INFO"
+  },
+  "private_chat": {
+    "pero_url": "http://127.0.0.1:8765",
+    "token_env": "PERO_MANAGEMENT_TOKEN",
+    "sync_seconds": 5.0,
+    "discover_seconds": 15.0
   }
 }

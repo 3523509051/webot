@@ -14,10 +14,11 @@ import json
 import os
 from collections import deque
 from pathlib import Path
+from .record_store import RecordStore
 
 
 class ChatLog:
-    def __init__(self, cfg, data_dir, logger=None) -> None:
+    def __init__(self, cfg, data_dir, logger=None, store=None) -> None:
         self.cfg = cfg
         self.logger = logger
         self.dir = Path(data_dir) / "chatlog"
@@ -26,6 +27,11 @@ class ChatLog:
         except OSError:
             pass
         self._mem: dict[str, deque] = {}
+        self.store = store
+
+    def _own_read(self,gid):
+        groups=getattr(self.cfg,'memory_groups',[]) or []
+        return self.store is not None and getattr(self.cfg,'record_store_read_enable',False) and (not groups or gid in groups)
 
     # ── 内部 ──────────────────────────────────────────
     def _limit(self) -> int:
@@ -73,17 +79,21 @@ class ChatLog:
     # ── 对外 ──────────────────────────────────────────
     def push(self, gid: str, item: dict) -> None:
         """记一条聊天（与 L1 同格式：user / text / ts / at）。"""
+        mid=self.store.append_message(gid,item) if self.store is not None else None
         dq = self._load(gid)
         dq.append(item)
         # 每 5 条落一次盘；第一条立即落盘（否则重启前一个文件都看不到，
         # 排查时无从下手）。丢的上限是最近 4 条，可以接受。
         if len(dq) == 1 or len(dq) % 5 == 0:
             self._flush(gid)
+        return mid
 
     def items(self, gid: str) -> list[dict]:
+        if self._own_read(gid):return self.store.recent_messages(gid,self._limit())
         return list(self._load(gid))
 
     def size(self, gid: str) -> int:
+        if self._own_read(gid):return len(self.store.recent_messages(gid,self._limit()))
         return len(self._load(gid))
 
     def overflow(
@@ -111,7 +121,13 @@ class ChatLog:
         return list(dq)[:n]
 
     def drop(self, gid: str, n: int) -> None:
+        if self._own_read(gid):
+            self.store.reset_context(gid)
         dq = self._load(gid)
         for _ in range(min(n, len(dq))):
             dq.popleft()
+        self._flush(gid)
+
+    def clear_legacy(self,gid):
+        self._load(gid).clear()
         self._flush(gid)

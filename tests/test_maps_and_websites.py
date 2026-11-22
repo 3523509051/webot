@@ -224,8 +224,7 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_map_authorization_and_missing_key(self):
         event = self.prepare(text="请安排杭州旅游路线")
         with patch.dict("os.environ", {"AMAP_WEB_KEY": ""}):
-            self.assertIn("Key", await self.bot.amap_places(event, "杭州", "西湖", "a"))
-            self.assertIn("没有", await self.bot.amap_places(event, "杭州", "西湖", "b"))
+            self.assertIn("Key", await self.bot.amap_places(event, "杭州", "西湖"))
         self.assertFalse(self.bot._amap_quota.path.exists())
 
     async def test_amap_route_preserves_order_and_handles_ambiguity(self):

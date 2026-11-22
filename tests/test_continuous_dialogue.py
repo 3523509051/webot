@@ -48,7 +48,8 @@ class DialogueTests(unittest.TestCase):
                 self.assertFalse(question.get_extra('ga_decidable'))
                 self.assertEqual(bot._number_tasks['group-1:alice'].entries,
                                  [str(n) for n in range(1, 11)] + ['11 12'])
-                self.assertEqual(len(bot.wm.state('group-1').l1), 10)
+                self.assertEqual(len(bot.wm.render_l1('group-1').splitlines())-1, 10)
+                self.assertLessEqual(len(bot.wm.state('group-1').l1), bot.cfg.l10_size)
                 context = req.extra_user_content_parts[0]['text']
                 self.assertIn('"1", "2", "3"', context)
                 self.assertIn('"11 12"', context)
@@ -74,6 +75,7 @@ class DialogueTests(unittest.TestCase):
             bot = Plugin(types.SimpleNamespace())
             bot.cfg.l3_enable = bot.cfg.kb_enable = bot.cfg.enable_mention = False
             bot.cfg.merge_enable = False
+            bot.cfg.preflight_enable = False
             tick = [0.0]
             clock = types.SimpleNamespace(time=lambda: 1000 + tick[0], monotonic=lambda: tick[0])
 

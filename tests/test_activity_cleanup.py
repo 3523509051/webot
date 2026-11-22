@@ -140,6 +140,7 @@ class ActivityTests(unittest.TestCase):
 
             provider = types.SimpleNamespace(text_chat=chat)
             bot = Plugin(types.SimpleNamespace(get_using_provider_async=AsyncMock(return_value=provider)))
+            bot.cfg.l3_auto_extract = True  # this case explicitly exercises the optional extractor
             bot._l3_seen['group-1'] = 5
             bot.wm.push_l1('group-1', {'user': 'alice', 'text': '喜欢红茶', 'ts': 0})
             bot.ltm.add_facts('group-1', 'alice', ['旧事实'])

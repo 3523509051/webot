@@ -1,5 +1,7 @@
 # 敏感配置
 .env
+.env.*
+!.env.example
 
 # 运行数据（含登录态、数据库）
 data/
@@ -54,3 +56,28 @@ keys.json
 # 虚拟显示器驱动工具（Surface 部署不需要，可选上传）
 tools/vdd/
 Thumbs.db
+
+# 本地交接、部署暂存与界面原型，不作为公开源码发布
+/交流/
+/access_stage/
+/f05-stage/
+/private-ui-stage/
+/*.stage.*
+/打开Pero控制室.ps1
+/bridge/BRIDGE_IMPLEMENTATION_GUIDE.md
+/bridge/PRIVATE_*.md
+/bridge/probe_private.py
+/docs/engineering-map.*
+/docs/diagrams/
+/docs/pero-execution-plan.md
+data-*/
+*.dpapi
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.pfx
+*.p12
+*.pem
+*.key

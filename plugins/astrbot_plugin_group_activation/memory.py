@@ -136,6 +136,7 @@ class LongTermMemory:
             os.replace(tmp, self.path)  # 原子替换
         except Exception as e:  # noqa: BLE001
             self._warn(f"写入长期记忆失败: {e}")
+            raise
 
     # ── 读 ────────────────────────────────────────────
     def members(self, gid: str) -> dict[str, Member]:

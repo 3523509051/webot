@@ -18,6 +18,18 @@ CONFIG_PATH = Path(__file__).with_name("config.json")
 
 @dataclass
 class PluginConfig:
+    record_store_enable: bool = False
+    record_store_read_enable: bool = False
+    identity_enable: bool = False
+    explicit_memory_enable: bool = False
+    journal_enable: bool = False
+    l20_record_enable: bool = False
+    l20_inject_enable: bool = False
+    memory_prelookup_enable: bool = False
+    memory_cleanup_enable: bool = False
+    memory_groups: list[str] = field(default_factory=list)
+    l2_inject_max_chars: int = 12000
+    l20_max_chars: int = 1500
     # ── 窗口（@ 开关）────────────────────────────────
     w0_seconds: float = 30.0            # 被 @ 后的初始窗口长度
     idle_seconds: float = 30.0          # 滑动空闲判定：最后一次活动后多久休眠
@@ -187,7 +199,7 @@ class PluginConfig:
     kb_min_score: float = 0.35             # 注入的最低相关度（滤掉不相关命中）
     kb_max_chars: int = 120                # 单条知识最长字符数
     kb_header: str = (
-        "# 本群沉淀的公共知识（长期记忆，按当前话题检索所得）\n"
+        "# 本群长期记忆与知识（按当前话题检索所得，人物与事项需结合来源核对）\n"
         "# 用法：和当前问题相关的就自然用上，别逐条复述、别报「根据知识库」这种话；"
         "没相关的就当没看见，不必勉强引用\n"
         "# 每条括号里的日期是记录时间：越久远越可能过时，只作参考，不要当成当下事实断定"

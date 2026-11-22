@@ -12,6 +12,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from mcp.types import CallToolResult  # import outside patch.dict so native dependencies are not reloaded
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ def plugin_with_fake_astrbot(tmp: str, *, return_module=False):
         event_message_type=passthrough, on_llm_request=passthrough,
         on_decorating_result=passthrough, after_message_sent=passthrough,
         llm_tool=passthrough, command=passthrough,
+        on_using_llm_tool=passthrough, on_llm_tool_respond=passthrough, on_llm_response=passthrough,
     )
     modules["astrbot.api.provider"].ProviderRequest = object
     modules["astrbot.api.star"].StarTools = types.SimpleNamespace(get_data_dir=lambda _: Path(tmp))
@@ -42,7 +44,19 @@ def plugin_with_fake_astrbot(tmp: str, *, return_module=False):
             name = "plugins.astrbot_plugin_group_activation.main"
             sys.modules.pop(name, None)
             module = importlib.import_module(name)
-            return (module.GroupActivationPlugin, module) if return_module else module.GroupActivationPlugin
+            original_load=module.PluginConfig.load
+            def config_for_test():
+                cfg=original_load()
+                for flag in ('record_store_enable','record_store_read_enable','identity_enable','explicit_memory_enable',
+                             'journal_enable','l20_record_enable','l20_inject_enable','memory_prelookup_enable'):
+                    setattr(cfg,flag,False)
+                cfg.memory_groups=[]
+                return cfg
+            class IsolatedPlugin(module.GroupActivationPlugin):
+                def __init__(self,context):
+                    with patch.object(module.PluginConfig,'load',side_effect=config_for_test):
+                        super().__init__(context)
+            return (IsolatedPlugin, module) if return_module else IsolatedPlugin
         finally:
             sys.path.remove(str(ROOT))
 
@@ -74,6 +88,8 @@ class GroupGateTests(unittest.TestCase):
             bot.cfg.kb_enable = False
             bot.cfg.enable_mention = False
             bot.cfg.merge_enable = False
+            bot.cfg.preflight_enable = False  # isolate the local router from the optional classifier
+            bot.cfg.l2_own_enable = False  # this case exercises framework history image stripping
 
             async def scenario():
                 ambient = Event("alice", "今天我们聊什么")

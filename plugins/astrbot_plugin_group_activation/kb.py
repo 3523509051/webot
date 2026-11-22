@@ -223,15 +223,15 @@ class KBStore:
                 vec_db = await helper._ensure_vec_db()  # noqa: SLF001（无公开入口）
             except Exception as e:  # noqa: BLE001
                 logger.warning("[group_activation] 初始化向量库失败: %s", e)
-                return []
+                raise RuntimeError('向量库初始化失败') from e
         try:
             results = await vec_db.retrieve(text, k=max(k, 3))
         except Exception as e:  # noqa: BLE001
             logger.warning("[group_activation] 向量检索失败: %s", e)
-            return []
+            raise RuntimeError('向量检索失败') from e
         qv = await self._embed(text)
         if qv is None:
-            return []
+            raise RuntimeError('查询嵌入不可用')
         out: list[tuple[str, float]] = []
         for r in results:
             content = str((getattr(r, "data", None) or {}).get("text") or "").strip()
@@ -239,7 +239,7 @@ class KBStore:
                 continue
             sv = await self._embed(content)
             if sv is None:
-                continue
+                raise RuntimeError('候选嵌入不可用')
             out.append((content, self._cos(qv, sv)))
         out.sort(key=lambda x: x[1], reverse=True)
         return out
@@ -273,6 +273,21 @@ class KBStore:
         pairs = await self._top_chunks(
             helper, query.strip(), k=self.cfg.kb_inject_top * 3
         )
+        store=getattr(self,'record_store',None)
+        groups=getattr(self,'memory_groups',[]) or []
+        if store is not None and (not groups or gid in groups):
+            import re
+            valid=[]
+            for text,score in pairs:
+                marker=re.search(r'\[webot-memory:([MS][a-f0-9]+)\]',text)
+                if marker:
+                    mid=marker[1]
+                    with store.transaction() as c:
+                        table='summaries' if mid.startswith('S') else 'memories'
+                        row=c.execute(f'SELECT state FROM {table} WHERE id=? AND gid=?',(mid,gid)).fetchone()
+                    if row is None or row[0]!='active':continue
+                valid.append((text,score))
+            pairs=valid
         lines = [
             f"- {text}"
             for text, score in pairs[: self.cfg.kb_inject_top]

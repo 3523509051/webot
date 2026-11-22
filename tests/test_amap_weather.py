@@ -24,12 +24,11 @@ class WeatherTests(unittest.IsolatedAsyncioTestCase):
         return event
     async def test_weather_question_grants_amap_without_search_grant(self):
         event = self.prepare(text="深圳现在是什么天气？")
-        self.assertEqual(event.get_extra("ga_weather_requests"), ["a"])
         self.assertEqual(event.get_extra("ga_search_requests"), [])
         with patch.object(AMapClient, "weather", AsyncMock(return_value={"city": "深圳市", "reporttime": "test"})) as call:
             self.assertIn("深圳市", await self.bot.amap_weather(event, "深圳"))
             call.assert_awaited_once_with("深圳", False)
-            self.assertIn("没有", await self.bot.amap_weather(event, "深圳", "b"))
+            self.assertIn("布尔", await self.bot.amap_weather(event, "深圳", "b"))
         result = await self.bot.web_search(event, "深圳天气")
         self.assertIn("amap_weather", result)
         self.assertFalse(self.bot._search_quota.path.exists())

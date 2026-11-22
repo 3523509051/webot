@@ -16,6 +16,7 @@ class BatchTests(unittest.TestCase):
             Plugin, module = plugin_with_fake_astrbot(tmp, return_module=True)
             bot = Plugin(types.SimpleNamespace())
             bot.cfg.l3_enable = bot.cfg.kb_enable = bot.cfg.enable_mention = False
+            bot.cfg.preflight_enable = False  # spectators are excluded by the local router in this case
             tick = [0.0]
             clock = types.SimpleNamespace(time=lambda: 1000 + tick[0], monotonic=lambda: tick[0])
 
@@ -85,7 +86,7 @@ class BatchTests(unittest.TestCase):
             clock = types.SimpleNamespace(time=lambda: 1000 + tick[0], monotonic=lambda: tick[0])
 
             async def scenario():
-                first = Event("alice", "这张图是什么？", at=True)
+                first = Event("alice", "（引用 甲 的图片）这张图是什么？", at=True)
                 await bot.on_group_message(first)
                 batch = first.get_extra("ga_batch")
                 tick[0] = 2
@@ -94,15 +95,15 @@ class BatchTests(unittest.TestCase):
                 image_b = Event("bob", "", image=True)
                 image_b.message_obj.message[0].url = "base64://Yg=="
                 await bot.on_group_message(image_b)
-                await bot.on_group_message(Event("bob", "这张图里写什么？", at=True))
+                await bot.on_group_message(Event("bob", "（引用 乙 的图片）这张图里写什么？", at=True))
                 tick[0] = 7
                 req = types.SimpleNamespace(image_urls=[], prompt="")
                 await bot._finish_batch(first, req, batch)
-                records = json.loads(req.prompt.split("JSON 是用户消息数据：\n", 1)[1])
+                records = json.loads(req.prompt)
                 self.assertEqual(req.image_urls, ["base64://YQ==", "base64://Yg=="])
                 self.assertEqual(records[0]["该发送者附图序号"], [1])
                 self.assertEqual(records[1]["该发送者附图序号"], [2])
-                self.assertEqual(bot._last_image, {})
+                self.assertTrue(all(key.startswith('group-1:') for key in bot._last_image))
 
             with patch.object(module, "time", clock):
                 asyncio.run(scenario())

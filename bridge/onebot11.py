@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from typing import Any, Awaitable, Callable
 
 import websockets
@@ -28,6 +29,25 @@ class ActionFailed(Exception):
         super().__init__(message)
         self.delivery_state = delivery_state
         self.retcode = retcode
+
+
+class BridgeSendError(RuntimeError):
+    """入站上报没有真正发出去（可识别、可重试）。
+
+    只用于上报调用；出站动作回执仍走 `_send_json(required=False)` 的尽力而为，
+    不因这个异常改变既有语义。
+
+    `code`：
+      - `not_connected`：反向 WS 未连接（等待重连后重试）；
+      - `send_failed`：写帧异常（连接可能已断，同样按可重试处理）。
+    """
+
+    retryable = True
+
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(code if not detail else f"{code}:{detail}")
+        self.code = code
+        self.detail = detail
 
 
 def _to_cq(segments: list[dict]) -> str:
@@ -54,29 +74,48 @@ class OneBotClient:
         token: str = "",
         heartbeat: float = 15.0,
         action_handler: ActionHandler | None = None,
+        identity_directory=None,
     ) -> None:
         self.ws_url = ws_url
         self.self_id = self_id
         self.token = token
         self.heartbeat = heartbeat
         self.action_handler = action_handler
+        self.identity_directory = identity_directory
+        self.bridge_session = uuid.uuid4().hex
 
         self._ws = None
-        self._msg_id = 0
+        self._msg_id = int(time.time() * 1_000_000)
 
     # ── 工具 ───────────────────────────────────────────
     def next_msg_id(self) -> int:
         self._msg_id += 1
         return self._msg_id
 
-    async def _send_json(self, obj: dict) -> None:
+    async def _send_json(self, obj: dict, *, required: bool = False) -> bool:
+        """发一帧 JSON。
+
+        `required=False`（默认）：心跳/动作回执等**尽力而为**的帧，未连接或失败
+        只记日志、返回 False，不改变既有出站回执语义。
+
+        `required=True`：入站上报必须**如实返回**结果——未连接抛 `not_connected`，
+        发送异常抛 `send_failed`。调度层据此保留待投递事件重试，绝不把"没发出去"
+        记成"已分发"。
+        """
         ws = self._ws
         if ws is None:
-            return
+            if required:
+                raise BridgeSendError("not_connected")
+            return False
         try:
             await ws.send(json.dumps(obj, ensure_ascii=False))
+            return True
         except Exception as e:  # noqa: BLE001
             log.warning("上报失败: %s", e)
+            if required:
+                # 只暴露异常类型，不带原始错误体/正文。
+                raise BridgeSendError("send_failed", type(e).__name__) from e
+            return False
 
     # ── 主循环 ─────────────────────────────────────────
     async def run(self) -> None:
@@ -196,10 +235,21 @@ class OneBotClient:
         user_id: int = 0,
         nickname: str = "",
         raw: str = "",
-    ) -> None:
+        identity: dict | None = None,
+        pero_ext: dict | None = None,
+        message_id: int | None = None,
+    ) -> int:
         """segments 为标准 OneBot v11 消息段列表，例如
         [{"type": "at", "data": {"qq": "10001"}},
          {"type": "text", "data": {"text": "你好"}}]
+
+        `pero_ext`（P13，可选）：版本化身份/引用/文件扩展，作为事件顶层
+        `pero_ext` 字段下发。所有旧标准字段原样保留，旧 AstrBot 适配器会忽略
+        未知顶层键；没有扩展时事件与升级前完全一致。
+
+        `message_id`（可选）：**重试时必须复用同一个值**，对外事件 ID 才稳定，
+        Pero 侧入站幂等（同一 source/event ID 只处理一次）才成立。
+        返回值即本次事件的 `message_id`；未连上或写帧失败抛 `BridgeSendError`。
         """
         message = segments
         # raw_message 按 OneBot v11 规范应为「CQ 码字符串」。
@@ -207,24 +257,50 @@ class OneBotClient:
         # 因此这里统一由 segments 生成规范的 CQ 码。
         raw_message = raw or _to_cq(segments)
 
-        await self._send_json(
-            {
-                "time": int(time.time()),
-                "self_id": self.self_id,
-                "post_type": "message",
-                "message_type": "group",
-                "sub_type": "normal",
-                "message_id": self.next_msg_id(),
-                "group_id": group_id,
+        mid = int(message_id) if message_id else self.next_msg_id()
+        if self.identity_directory is not None and identity:
+            self.identity_directory.register_message(self.bridge_session, mid,
+                str(identity['group_wxid']), identity)
+
+        event = {
+            "time": int(time.time()),
+            "self_id": self.self_id,
+            "post_type": "message",
+            "message_type": "group",
+            "sub_type": "normal",
+            "message_id": mid,
+            "group_id": group_id,
+            "user_id": user_id or self.self_id,
+            "message": message,
+            "raw_message": raw_message,
+            "font": 0,
+            "sender": {
                 "user_id": user_id or self.self_id,
-                "message": message,
-                "raw_message": raw_message,
-                "font": 0,
-                "sender": {
-                    "user_id": user_id or self.self_id,
-                    "nickname": nickname or "unknown",
-                    "card": "",
-                    "role": "member",
-                },
-            }
-        )
+                "nickname": nickname or "unknown",
+                "card": "",
+                "role": "member",
+            },
+        }
+        if isinstance(pero_ext, dict) and pero_ext:
+            # 版本化扩展（P13）：只加顶层键，不改任何标准字段；
+            # session（桥进程会话）在这里填，用于限定 local_id 的来源范围。
+            pero_ext.setdefault("session", self.bridge_session)
+            event["pero_ext"] = pero_ext
+        await self._send_json(event, required=True)
+        return mid
+
+    async def send_private_message(self, user_id: int, segments: list[dict],
+                                   nickname: str = "", pero_ext: dict | None = None,
+                                   message_id: int | None = None) -> int:
+        """同 `send_group_message`：复用 `message_id` 保证重试时事件身份稳定。"""
+        ext = dict(pero_ext or {})
+        ext["session"] = self.bridge_session
+        mid = int(message_id) if message_id else self.next_msg_id()
+        await self._send_json({"time": int(time.time()), "self_id": self.self_id,
+                               "post_type": "message", "message_type": "private",
+                               "sub_type": "friend", "message_id": mid,
+                               "user_id": user_id, "message": segments,
+                               "raw_message": _to_cq(segments), "font": 0,
+                               "sender": {"user_id": user_id, "nickname": nickname},
+                               "pero_ext": ext}, required=True)
+        return mid

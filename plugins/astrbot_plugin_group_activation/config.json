@@ -73,5 +73,17 @@
   "l2_own_enable": true,
   "l2_inject_items": 200,
   "l2_archive_ratio": 0.25,
-  "l3_auto_extract": false
+  "l3_auto_extract": false,
+  "record_store_enable": true,
+  "record_store_read_enable": true,
+  "identity_enable": true,
+  "explicit_memory_enable": true,
+  "journal_enable": true,
+  "l20_record_enable": true,
+  "l20_inject_enable": true,
+  "memory_prelookup_enable": true,
+  "memory_cleanup_enable": false,
+  "memory_groups": [],
+  "l2_inject_max_chars": 12000,
+  "l20_max_chars": 1500
 }
