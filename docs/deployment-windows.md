@@ -2,19 +2,28 @@
 
 **Pero/start.cmd 只启动 Pero 核心和控制室；webot/start.cmd 只启动微信桥。** 两者后台运行，各自 stop.cmd 只停止本项目。只打开网页用 Pero 控制室地址 http://127.0.0.1:8766/，不会启动服务。无需 Tailscale。
 
-## 首次部署顺序
+## 前置准备
 
-1. 克隆两个仓库到同一父目录：Pero 与 webot。
-2. 安装 64 位 Python 3.10+、Node.js/npm。
-3. 双击 webot/install.cmd 安装双方依赖；它只安装，不启动。也可分别运行 Pero/install-pero.cmd、webot/install-bridge.cmd。
-4. 手动登录机器人微信，先只保留这一个账号。
-5. 双击 webot/配置微信目录.cmd，填写 xwechat_files 根目录（不是账号子目录或 db_storage）。已有配置先备份。
-6. 双击 webot/绑定微信账号.cmd，按提示在自己的文件传输助手手动发送绑定码并确认。
-7. **双方服务停止时**，双击 webot/连接Pero.cmd，一次性同步该账号全部群路由、连接地址和本机加密凭据。没有选群步骤，此脚本不启动服务。非并列目录可传 `--pero-root "D:\Apps\Pero"`。
-8. 双击 **Pero/start.cmd**，等待核心与控制室后台启动，浏览器自动打开本机控制室。无需先启动微信桥。
-9. 双击 **Pero/login-code.cmd** 查看本机管理访问码并登录。访问码由 Pero 负责，模型 API Key 另在控制室配置。
-10. 双击 **webot/start.cmd**，它只启动桥，并按已保存的配置连接 Pero。若 Pero 尚未运行，桥不会代为启动它；连接状态看 webot/status.cmd、桥日志和控制室。
-11. 由你在测试群发唤醒消息确认收发，再登录第二个微信复测。
+克隆两个仓库到同一父目录：Pero 与 webot。安装 64 位 Python 3.10+；Pero 前端构建另需 Node.js/npm。Pero 按它自己的说明安装，入口是 **Pero/install-pero.cmd**；webot 不负责 Pero 的安装流程。现存 install.cmd 仅作为可选的统一依赖安装便捷入口，不是以下标准五步的必经步骤。
+
+## webot 首次接入：五步
+
+以下脚本全部位于 **webot 根目录**，按顺序执行：
+
+1. **登录微信**：手动登录机器人号，首次绑定时只保留这一个账号登录。
+2. **install-bridge.cmd**：创建 bridge/.venv 并安装微信桥依赖，不安装或启动 Pero。
+3. **配置微信目录.cmd**：填写 xwechat_files 根目录，不是账号子目录或 db_storage；已有配置会先备份。
+4. **绑定微信账号.cmd**：按提示在机器人号自己的文件传输助手手动发送绑定码并确认，保存固定账号目录和内部 wxid。
+5. **连接Pero.cmd**：在双方服务均停止、Pero 后端环境已安装时，同步全部群路由、连接地址和本机加密凭据。没有选群步骤，不启动任何服务。非并列目录可传 `--pero-root "D:\Apps\Pero"`。
+
+示例目录为 `D:\webot-pero-clean-20261127\webot`，不要求所有使用者使用相同盘符。连接配置是首次对接步骤，不需要每次启动重跑；更换账号、凭据或同步入群/退群范围时再执行。
+
+## 接入后分别启动
+
+1. 运行 **Pero/start.cmd**，后台启动核心和控制室，浏览器自动打开本机管理页面。
+2. 运行 **Pero/login-code.cmd** 查看访问码，登录并配置模型 API Key。这部分由 Pero 负责。
+3. 运行 **webot/start.cmd**，只启动微信桥，按已保存配置连接后端；不会代为启动 Pero 或微信。
+4. 由你在测试群发唤醒消息验证收发，再登录第二个微信验证双开。日常双方独立启停，各自 stop.cmd 只停止自己。
 
 ## 独立使用
 

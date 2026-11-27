@@ -1,6 +1,14 @@
 # webot
 
-首次克隆后，先双击 `install.cmd` 安装相邻 Pero 的后端和前端、以及本仓库的微信桥依赖，再配置微信目录并绑定账号。只缺 Pero 环境时可单独运行相邻 Pero 根目录的 `install-pero.cmd`。
+首次接入按以下顺序操作，脚本均在 webot 根目录：
+
+1. 手动登录机器人微信，首次绑定时只保留这一个账号登录。
+2. 运行 `install-bridge.cmd`，安装 webot 自己的微信桥依赖。
+3. 运行 `配置微信目录.cmd`，填写微信数据根目录。
+4. 运行 `绑定微信账号.cmd`，按提示完成文件传输助手绑定码验证。
+5. 在 Pero 和 webot 都停止时运行 `连接Pero.cmd`，同步全部群路由和连接配置；它不启动任何服务。
+
+**第 5 步前，Pero 必须已按其仓库说明完成后端环境安装**，否则没有可调用的配置与凭据接口。Pero 自己的安装、启动、模型配置和管理访问码由 Pero 负责。首次连接配置完成后，分别运行 Pero/start.cmd 与 webot/start.cmd；webot 不会启动 Pero。
 
 **Windows 本机部署从这里开始：[完整安装、账号绑定、全群接入和独立后台启动](docs/deployment-windows.md)。webot 和 Pero 各自后台启动，各自停止。**
 

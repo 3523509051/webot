@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Standard webot onboarding sequence
+
+PASS, documentation only. README and deployment guide now use the user's five-step order: log in to WeChat, install-bridge.cmd, configure directory, bind account, connect Pero. Explicitly states that Pero's backend environment must already be installed and both services stopped for the fifth step; separates independent startup and Pero-owned login/model configuration from webot onboarding. No placeholder, runtime, credential or memory behavior changed. Cross-checked against connect_pero.py and installer/entry filenames.
+
 ## Fixed database account independent of desktop sending
 
 PASS for the requested section-six alignment. Group scanning and runtime database operations explicitly use the persisted complete account directory and verify internal wxid; they no longer consult the sending desktop guard. Database identity errors remain latched within the database adapter and reject results after an internal account fallback. Sending still retains independent process/window/foreground checks. Added a regression reproducing a failed desktop guard while the pinned database remains valid, observed failure before the change and success after it. All 25 focused offline tests, compilation and whitespace checks passed. Real dual-WeChat continuation is not claimed verified; no memory records were altered or actual messages sent. This change addresses coupling, not an asserted root cause of the previously observed lost heartbeat.
