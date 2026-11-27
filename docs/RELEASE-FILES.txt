@@ -1,7 +1,9 @@
-Source publication file list (2026-11-22; all-group combination update)
+Source publication file list (2026-11-27)
 Repository: webot
-Files: 152
 
+"\346\211\223\345\274\200\346\216\247\345\210\266\345\256\244.cmd"
+"\346\243\200\346\237\245\345\276\256\344\277\241\347\273\221\345\256\232.cmd"
+"\347\273\221\345\256\232\345\276\256\344\277\241\350\264\246\345\217\267.cmd"
 "stickers/default/files/st_0001_\351\253\230\345\206\267\345\253\214\345\274\203_\346\227\240\350\257\255\345\206\260\347\262\276.jpg"
 "stickers/default/files/st_0002_\346\270\251\351\246\250_\345\217\214\351\276\231\350\264\264\350\264\264.jpg"
 "stickers/default/files/st_0003_\346\260\224\351\274\223\351\274\223_\345\202\262\345\250\207\345\207\266\350\220\214.jpg"
@@ -32,6 +34,9 @@ Dockerfile.astrbot
 LICENSE
 README.md
 bridge/README.md
+bridge/account_binding.py
+bridge/bind_account.py
+bridge/bound_wechat_gui.py
 bridge/bridge_lock.py
 bridge/browser_search.py
 bridge/config.example.json
@@ -59,6 +64,7 @@ bridge/sticker_library.py
 bridge/unified_poll.py
 bridge/wechat_article.py
 bridge/wechat_client.py
+bridge/wechat_desktop.py
 docker-compose.yml
 docs/RELEASE-CHECKLIST.md
 docs/RELEASE-FILES.txt
@@ -66,6 +72,7 @@ docs/architecture.md
 docs/bridge-integration.md
 docs/context-design.md
 docs/deploy-sp4.md
+docs/deployment-windows.md
 docs/deployment.md
 docs/design.md
 docs/latency-diagnosis.md
@@ -76,6 +83,7 @@ docs/memory-upgrade-progress.md
 docs/porting.md
 docs/pre-push-review-2026-11-22-2009.md
 docs/pre-push-review-2026-11-22-2151.md
+docs/pre-push-review-2026-11-27.md
 docs/roadmap.md
 docs/tech-stack.md
 docs/upgrade-v0.15.1.md
@@ -87,6 +95,7 @@ docs/upgrade-v0.20.0.md
 docs/upgrade-v0.21.0.md
 docs/wechatpadpro-notes.md
 files/README.md
+login-code.cmd
 plugins/astrbot_plugin_betty/main.py
 plugins/astrbot_plugin_betty/metadata.yaml
 plugins/astrbot_plugin_group_activation/amap.py
@@ -116,8 +125,11 @@ restart-astr.cmd
 restart-bridge.cmd
 screen-off.cmd
 scripts/add_embedding_provider.py
+scripts/combo_entry.py
+scripts/combo_launcher.py
 scripts/dispctl.ps1
 scripts/fix-bom.ps1
+scripts/launch_child.py
 scripts/list-groups.py
 scripts/migrate_memory_store.py
 scripts/patch_astrbot_config.py
@@ -129,14 +141,21 @@ scripts/set_persona.py
 scripts/vdd.ps1
 scripts/webot-restart.ps1
 scripts/webot-service.ps1
+scripts/wechat_pairing.py
+scripts/windows_job.py
+setup.cmd
 start.cmd
 status.cmd
 stickers/README.md
 stickers/default/index.json
 stop.cmd
+tests/test_account_binding.py
 tests/test_activity_cleanup.py
 tests/test_amap_weather.py
+tests/test_binding_send_boundary.py
+tests/test_bound_wechat_gui.py
 tests/test_browser_search.py
+tests/test_combo_ownership.py
 tests/test_continuous_dialogue.py
 tests/test_group_gate.py
 tests/test_identity.py
