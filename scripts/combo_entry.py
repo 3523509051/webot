@@ -33,8 +33,14 @@ def main(argv=None):
     args,extra=parser.parse_known_args(argv)
     pero=args.pero_root.expanduser().resolve()
     python=pero/'.venv/Scripts/python.exe'
+    if not (pero/'requirements-lock.txt').is_file():
+        print('找不到 Pero 仓库：'+str(pero)+'。请将两个仓库放在同一父目录，或指定 --pero-root PATH。',file=sys.stderr)
+        return 1
     if not python.is_file():
-        print('Install the adjacent Pero repository and its .venv first, or pass --pero-root PATH.',file=sys.stderr)
+        print('Pero 虚拟环境尚未安装：'+str(python)+'。请先运行 webot/install-pero.cmd，或用 install.cmd 安装双方依赖。',file=sys.stderr)
+        return 1
+    if args.action in ('start','check') and not (pero/'frontend/dist/index.html').is_file():
+        print('Pero 控制室前端尚未构建。请先运行 webot/install-pero.cmd，或在 Pero/frontend 执行 npm ci 和 npm run build。',file=sys.stderr)
         return 1
     env={**os.environ,'WEBOT_PERO_ROOT':str(pero),'PYTHONIOENCODING':'utf-8'}
     command=[str(python),str(ROOT/'scripts/combo_launcher.py')]

@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Installation prerequisite follow-up
+
+PASS for the installer/diagnostic change: added install-pero.cmd (backend requirements, editable package and npm frontend build) and install.cmd (Pero then bridge). Both stop on failures and never launch services. Launcher now distinguishes a missing repository, missing virtual environment and missing frontend build; stop/status remain usable without frontend assets. Verified invalid repository paths are rejected before installation, Python compilation and whitespace checks. Full dependency download/build remains the user's clean-deployment step; no pre-existing environment was copied into the fresh checkout.
+
 ## All-group startup revision (latest user decision)
 
 PASS. Removed setup.cmd and terminal group-selection filtering. Startup automatically synchronizes all scanned groups, refreshes this account's group routes and removes groups missing from its startup snapshot, preserving other accounts and private routes. Historical group IDs still protect collision checks. Added install-bridge.cmd and actionable missing-dependency hints. Group membership changes require stop/start; no live membership hot reload is claimed. Verification: 24 offline cases, Python compilation/whitespace checks and real isolated Pero plus synthetic bridge startup/cooperative stop all passed. No real WeChat or model requests were used. Supersedes the earlier selection description below.

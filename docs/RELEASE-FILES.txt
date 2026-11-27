@@ -1,4 +1,5 @@
 Source publication file list (2026-11-27)
+Installation entry additions: install.cmd; install-pero.cmd
 Configuration helper addition: scripts/configure-wechat.ps1; 配置微信目录.cmd
 Latest revision: install-bridge.cmd replaces the removed setup.cmd selection step.
 Repository: webot
