@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Root CMD entry cleanup
+
+PASS, explicitly user-authorized removal. Root now contains exactly six primary CMD entries (bridge dependency install, directory configuration, account binding, connection configuration, start, stop) and two diagnostic entries (status, binding check). Removed seven obsolete/optional root entries: combined install, open-control-room, three legacy AstrBot restart scripts, dedicated screen-off and old-combination stop shortcut. Runtime sources, dependencies, configuration and data are untouched. Retained the underlying migration-only old-combination stop utility and corrected its diagnostic/docs references. Verified the exact remaining file set, nonempty entry files, README/current guide references, Python compilation and whitespace checks. No live process restart, GUI action, message, dependency install or memory modification was performed. Older historical documents remain historical references rather than current operating instructions.
+
 ## Bridge-only automatic web control
 
 PASS. Added machine-readable status to the existing bridge launcher and automatic registration of its trusted checkout path during explicit connection setup. Manager delegates only start/stop to this existing bridge supervisor; it never starts or closes WeChat. Core/Manager process ownership remains in Pero. Verified 25 focused offline regressions and an isolated real Pero HTTP control lifecycle with a synthetic bridge, including bridge stop/start without stopping Core. No real messages or model calls. Docs distinguish web Core-only control from complete Pero stop.cmd shutdown.

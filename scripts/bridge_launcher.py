@@ -65,7 +65,7 @@ def main(argv=None):
     if args.action=='supervise':return supervise()
     if args.action=='start':
         if (ROOT/'data/launcher.lock').exists() and locked(ROOT/'data/launcher.lock'):
-            raise LauncherError('检测到旧组合实例，请先运行 stop-old-combination.cmd 收尾，再分别启动双方。')
+            raise LauncherError('检测到旧组合实例，请先运行 bridge/.venv/Scripts/python.exe scripts/stop_old_combination.py 收尾，再分别启动双方。')
         if running():print('webot 已在后台运行。');return 0
         if (ROOT/'bridge/cache/bridge-instance.lock').exists() and locked(ROOT/'bridge/cache/bridge-instance.lock'):
             raise LauncherError('已有其他入口启动的微信桥，请先正常停止该实例。')

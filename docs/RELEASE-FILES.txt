@@ -1,4 +1,4 @@
-Source publication file list (2026-11-27; automatic local core and bridge control)
+Source publication file list (2026-11-27; simplified root entry points)
 Repository: webot
 
 .env.example
@@ -69,7 +69,6 @@ docs/upgrade-v0.21.0.md
 docs/wechatpadpro-notes.md
 files/README.md
 install-bridge.cmd
-install.cmd
 plugins/astrbot_plugin_betty/main.py
 plugins/astrbot_plugin_betty/metadata.yaml
 plugins/astrbot_plugin_group_activation/amap.py
@@ -94,10 +93,6 @@ plugins/astrbot_plugin_group_activation/search_quota.py
 plugins/astrbot_plugin_group_activation/tooltrace.py
 plugins/astrbot_plugin_group_activation/web_policy.py
 plugins/astrbot_plugin_group_activation/window.py
-restart-all.cmd
-restart-astr.cmd
-restart-bridge.cmd
-screen-off.cmd
 scripts/add_embedding_provider.py
 scripts/bridge_launcher.py
 scripts/configure-wechat.ps1
@@ -147,7 +142,6 @@ stickers/default/files/st_0022_傲娇嫌弃_用不起就别用.jpg
 stickers/default/files/st_0023_心虚自嘲_瞎编应付.jpg
 stickers/default/files/st_0024_嘲讽_笨蛋对视.jpg
 stickers/default/index.json
-stop-old-combination.cmd
 stop.cmd
 tests/test_account_binding.py
 tests/test_activity_cleanup.py
@@ -173,7 +167,6 @@ tests/test_search_and_kb.py
 tests/test_send_outcomes.py
 tests/test_token_routing.py
 tests/test_tooltrace.py
-打开控制室.cmd
 检查微信绑定.cmd
 绑定微信账号.cmd
 连接Pero.cmd

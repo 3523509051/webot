@@ -4,7 +4,7 @@
 
 ## 前置准备
 
-克隆两个仓库到同一父目录：Pero 与 webot。安装 64 位 Python 3.10+；Pero 前端构建另需 Node.js/npm。Pero 按它自己的说明安装，入口是 **Pero/install-pero.cmd**；webot 不负责 Pero 的安装流程。现存 install.cmd 仅作为可选的统一依赖安装便捷入口，不是以下标准五步的必经步骤。
+克隆两个仓库到同一父目录：Pero 与 webot。安装 64 位 Python 3.10+；Pero 前端构建另需 Node.js/npm。Pero 按它自己的说明安装，入口是 **Pero/install-pero.cmd**；webot 不负责 Pero 的安装流程。webot 仅提供自己的 install-bridge.cmd，双方不再共用根目录安装入口。
 
 ## webot 首次接入：五步
 
@@ -50,7 +50,7 @@
 
 ## 旧组合入口升级
 
-若原组合实例还在运行，先在 webot 运行 stop-old-combination.cmd 正常收尾。这是一次性迁移用的停止入口，不能启动服务。之后按上面的连接配置与独立启动顺序使用。
+新克隆目录无需旧组合迁移。如果升级自旧组合且该实例仍运行，可在 webot 根目录执行 `bridge\.venv\Scripts\python.exe scripts\stop_old_combination.py` 正常收尾；该底层迁移工具只停止旧实例，不启动服务，根目录不再提供其 CMD 快捷方式。之后按上面的连接配置与独立启动顺序使用。
 
 旧组合配置、数据和加密凭据不删除。首次连接时若 Pero/config/local.json 不存在，可采用旧 webot/data/combo/config.json 作为配置起点，保留其原有数据路径；否则沿用已有 Pero 配置。不要删除旧数据目录来处理启动错误。新系统各自维护进程状态；旧管理界面保存的模型配置如需迁移，应单独核对，不以重新安装覆盖数据。
 

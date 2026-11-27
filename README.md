@@ -298,6 +298,25 @@ OneBot 连接令牌、内部管理访问码和模型 API Key 是不同凭据。w
 
 部分默认值在 `main.py` 的 `DEFAULT_CONFIG` 中补齐，模板未逐项列出不代表该项不能配置。配置修改后应重启桥并确认实际读取结果。
 
+## 根目录操作入口
+
+根目录只保留以下 **6 个常用脚本与 2 个诊断脚本**。首次部署按本文开头的五步执行；平时只需启动、停止微信桥。
+
+| 脚本 | 用途 | 何时使用 |
+| --- | --- | --- |
+| `install-bridge.cmd` | 安装 webot 微信桥依赖 | 首次安装或依赖升级 |
+| `配置微信目录.cmd` | 校验并保存微信数据根目录，备份已有配置 | 首次安装或目录迁移 |
+| `绑定微信账号.cmd` | 绑定机器人账号的数据库目录及内部 wxid | 首次绑定或更换账号 |
+| `连接Pero.cmd` | 双方停止时同步全部群路由和连接凭据，不启动服务 | 首次对接及连接配置变化 |
+| `start.cmd` | 后台启动微信桥，不启动 Pero 或微信 | 日常启动 |
+| `stop.cmd` | 正常停止本目录启动的微信桥，不影响 Pero 或微信 | 日常停止 |
+| `status.cmd` | 查看桥进程状态及日志位置 | 诊断 |
+| `检查微信绑定.cmd` | 桥停止时核对已保存的账号绑定 | 诊断 |
+
+Pero 的依赖安装、核心与控制室启动、管理访问码均在 Pero 仓库中完成。需要打开控制室时直接访问 `http://127.0.0.1:8766/`。重启桥使用 `stop.cmd` 后再运行 `start.cmd`。
+
+旧 AstrBot 根目录重启脚本、专用熄屏入口和组合安装/旧组合停止快捷方式已移除，避免误操作。`bridge/`、`scripts/` 是上述入口的运行代码，不能因根目录入口精简而删除。现有配置、绑定、凭据、缓存和记忆数据不在本次清理范围。
+
 ## 运行与数据
 
 - **保持交互桌面**：锁屏与普通熄屏不是同一种状态。仓库的虚拟显示／熄屏方案依赖额外驱动、脚本和当前桌面配置，不作为任意 Windows 机器的通用保证。
@@ -308,7 +327,7 @@ OneBot 连接令牌、内部管理访问码和模型 API Key 是不同凭据。w
 
 ### 旧 AstrBot 组合
 
-仓库仍保留旧插件、Docker Compose 及 `restart-all.cmd`、`restart-astr.cmd` 等历史运维入口；`scripts/webot-service.ps1` 当前仍包含 Docker／AstrBot 服务控制。根目录 start.cmd/stop.cmd/status.cmd 现只管理微信桥，与这些历史入口分开。
+仓库仍保留旧插件、Docker Compose 和历史文档；`scripts/webot-service.ps1` 仍是历史 Docker／AstrBot 维护代码，不属于当前 Pero 接入流程。容易误点的旧根目录 CMD 入口已移除，当前 start.cmd/stop.cmd/status.cmd 只管理微信桥。
 
 使用 Pero 时，优先使用 **webot 仓库的 start.cmd**，或分别启动 Pero 和 bridge/main.py。webot 根目录的 start.cmd/stop.cmd/status.cmd 只管理微信桥；旧 AstrBot 脚本仅作历史兼容。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
 
