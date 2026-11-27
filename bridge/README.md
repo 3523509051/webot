@@ -41,4 +41,4 @@ Copy-Item config.example.json config.json
 
 根目录的旧 AstrBot 运维脚本不是 Pero 的启动器。不要据脚本名称直接重启不相关的服务；具体职责和兼容范围见首页。
 
-首次使用请先在仓库根目录运行绑定微信账号.cmd，再运行 start.cmd 自动同步全部群并启动。详见 ../docs/deployment-windows.md。
+首次使用请先在仓库根目录运行绑定微信账号.cmd，双方停止时运行连接Pero.cmd 同步全部群，再分别启动 Pero 和 webot。详见 ../docs/deployment-windows.md。

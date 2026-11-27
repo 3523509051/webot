@@ -2,7 +2,7 @@
 
 首次克隆后，先双击 `install.cmd` 安装相邻 Pero 的后端和前端、以及本仓库的微信桥依赖，再配置微信目录并绑定账号。只缺 Pero 环境时可单独运行相邻 Pero 根目录的 `install-pero.cmd`。
 
-**Windows 本机部署从这里开始：[完整安装、账号绑定、全群接入和组合启动](docs/deployment-windows.md)。组合由 webot 管理，Pero 不再提供微信组合入口。**
+**Windows 本机部署从这里开始：[完整安装、账号绑定、全群接入和独立后台启动](docs/deployment-windows.md)。webot 和 Pero 各自后台启动，各自停止。**
 
 **连接微信与 Agent。**
 
@@ -168,13 +168,11 @@ webot 主动连接上层的 OneBot v11 反向 WebSocket 服务，握手提供 `X
 
 ## 快速开始
 
-### 与 Pero 自动组合启动
+### 与 Pero 独立启动
 
-安装双方依赖、构建 Pero 前端后，手动登录机器人微信，先运行 `绑定微信账号.cmd`，再从 webot 运行 `start.cmd`。并列目录自动找到 Pero；否则使用 `start.cmd --pero-root "D:\你的目录\Pero"`。
+双方安装后，先配置微信目录并绑定账号。在双方停止时运行 webot 的 `连接Pero.cmd` 自动同步全部群和连接配置。然后分别运行 **Pero/start.cmd** 与 **webot/start.cmd**，两边均后台运行，不会相互启动。各自 stop.cmd 只停止自己。
 
-启动时自动扫描并接入机器人账号的全部群，不提供首次选群步骤。通过机器人入群或退群控制范围；当前需停止并重新启动组合后同步群列表。回复仍遵循唤醒与群规则。
-
-组合启动会修改 bridge/config.json 并先备份原文件。当前桥支持 astrbot.token_env 从进程环境读取连接令牌，组合入口负责加密保存与注入。详细步骤见 [Pero 微信组合使用指南](https://github.com/3523509051/Pero/blob/main/docs/wechat-combination.md)。下方供单独运行桥使用。
+管理访问码由 Pero 负责，使用 Pero/login-code.cmd 查看。详细步骤见 [Windows 部署指南](docs/deployment-windows.md)。
 
 ### 1. 运行条件
 
@@ -230,7 +228,7 @@ Copy-Item config.example.json config.json
 }
 ```
 
-**`astrbot` 是当前沿用的配置节名称，不意味着必须使用 AstrBot。** `ws_url` 应填写实际后端地址。模板的 `6199` 来自旧组合；Pero 通道默认配置端口为 `6200`，需显式开启并核对监听地址，不能仅照抄某个端口。
+**`astrbot` 是当前沿用的配置节名称，不意味着必须使用 AstrBot。** `ws_url` 应填写实际后端地址。当前模板为同机 Pero 默认端口 `6200`；后端需启用通道并核对连接凭据，可在双方停止时运行连接Pero.cmd。旧 AstrBot 部署的 `6199` 不能当作本机 Pero 端口沿用。
 
 首次运行建议显式填写 `wechat.groups`。当前逻辑在 `groups` 和 `group_whitelist` 都为空时会尝试枚举全部群，**空列表不表示不监听任何群**。桥也仍要求至少一个可用群才能完成当前启动流程，尚不能按“零群、纯私聊”配置直接启动。
 
@@ -302,9 +300,9 @@ OneBot 连接令牌、内部管理访问码和模型 API Key 是不同凭据。w
 
 ### 旧 AstrBot 组合
 
-仓库仍保留旧插件、Docker Compose 及 `start.cmd`、`restart-all.cmd`、`restart-astr.cmd` 等运维入口。它们面向原 AstrBot 组合，不是 Pero 的通用启动器；`scripts/webot-service.ps1` 当前仍包含 Docker／AstrBot 服务控制。
+仓库仍保留旧插件、Docker Compose 及 `restart-all.cmd`、`restart-astr.cmd` 等历史运维入口；`scripts/webot-service.ps1` 当前仍包含 Docker／AstrBot 服务控制。根目录 start.cmd/stop.cmd/status.cmd 现只管理微信桥，与这些历史入口分开。
 
-使用 Pero 时，优先使用 **webot 仓库的 start.cmd**，或分别启动 Pero 和 bridge/main.py。webot 根目录的 start.cmd/stop.cmd/status.cmd 现统一管理 Pero 组合；旧 AstrBot 脚本仅作历史兼容。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
+使用 Pero 时，优先使用 **webot 仓库的 start.cmd**，或分别启动 Pero 和 bridge/main.py。webot 根目录的 start.cmd/stop.cmd/status.cmd 只管理微信桥；旧 AstrBot 脚本仅作历史兼容。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
 
 ## 文档与开发
 

@@ -7,7 +7,7 @@ if not exist "bridge\.venv\Scripts\python.exe" (
  pause
  exit /b 1
 )
-"bridge\.venv\Scripts\python.exe" "scripts\combo_entry.py" start %*
+"bridge\.venv\Scripts\python.exe" "scripts\bridge_launcher.py" start %*
 set "RESULT=%errorlevel%"
 if not "%RESULT%"=="0" pause
 exit /b %RESULT%

@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Independent background startup (latest requirement)
+
+PASS. webot/start, stop and status now use the bridge-only supervisor, which neither imports Pero nor starts/stops it. Removed active combination startup modules; retained a migration-only old-stop requester incapable of starting services. Added explicit connection setup while both sides are stopped: it configures all scanned group routes and user-encrypted bridge credentials without launching processes. Existing configuration/data remain backed up and preserved. 24 offline cases and compilation checks passed. Isolated lifecycle verification used a real Pero background supervisor and synthetic bridge: Pero starts without a bridge; its own viewer authenticates to Manager; bridge connects independently; stopping either leaves the other running; all fixtures were then stopped. No real WeChat, messages or model requests were used. Actual desktop binding remains a user test.
+
 ## Management credential ownership correction
 
 PASS. Removed webot/login-code.cmd and both webot viewing CLI actions. Combination startup calls Pero's access-code module and supplies its old encrypted file only as a migration candidate. webot retains separate OneBot transport-token responsibility. Updated the deployment guide to use Pero/login-code.cmd. Verified 24 offline cases, independent Pero lifecycle, combined lifecycle with a synthetic bridge, and successful protected API authentication using the code read through Pero's viewer. No actual WeChat or model interaction; old access-code values were not printed or recorded.

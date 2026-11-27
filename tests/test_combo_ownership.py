@@ -37,15 +37,13 @@ class CombinationTests(unittest.TestCase):
         source=(ROOT/'scripts/wechat_pairing.py').read_text(encoding='utf-8')
         self.assertNotIn('select_groups',source)
 
-    def test_supervisor_is_owned_by_webot_and_uses_separate_bridge_python(self):
-        import combo_launcher
-        self.assertEqual(combo_launcher.ROOT,ROOT)
-        self.assertEqual(combo_launcher.PERO_ROOT,ROOT.parent/'Pero')
-        source=(ROOT/'scripts/combo_launcher.py').read_text(encoding='utf-8')
-        self.assertIn("InstanceLock(ROOT/'data/launcher.lock')",source)
-        self.assertIn("PERO_ROOT/'src'",source)
-        self.assertIn("str(pairing['python'])",source)
-        self.assertNotIn("parser.add_argument('--with-webot'",source)
+    def test_bridge_supervisor_does_not_import_or_start_pero(self):
+        source=(ROOT/'scripts/bridge_launcher.py').read_text(encoding='utf-8')
+        self.assertNotIn('from pero',source)
+        self.assertNotIn('launch_child.py',source)
+        self.assertNotIn('management_token(',source)
+        self.assertIn('bridge/run_managed.py',source)
+        self.assertIn('CREATE_NO_WINDOW',source)
 
 
 if __name__=='__main__':unittest.main()

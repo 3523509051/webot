@@ -61,7 +61,7 @@ def build_configuration(core,bridge,snapshot,previous,agent_id):
 
 
 def prepare(root,webot_root,config_path,state_dir,agent_id):
-    from combo_launcher import atomic_write,LauncherError
+    from local_process import atomic_write,LauncherError
     from pero.core.settings import Settings
     root=Path(root);webot=Path(webot_root).expanduser().resolve()
     bridge_dir=webot/'bridge';python=bridge_dir/'.venv/Scripts/python.exe'
