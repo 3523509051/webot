@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Fixed database account independent of desktop sending
+
+PASS for the requested section-six alignment. Group scanning and runtime database operations explicitly use the persisted complete account directory and verify internal wxid; they no longer consult the sending desktop guard. Database identity errors remain latched within the database adapter and reject results after an internal account fallback. Sending still retains independent process/window/foreground checks. Added a regression reproducing a failed desktop guard while the pinned database remains valid, observed failure before the change and success after it. All 25 focused offline tests, compilation and whitespace checks passed. Real dual-WeChat continuation is not claimed verified; no memory records were altered or actual messages sent. This change addresses coupling, not an asserted root cause of the previously observed lost heartbeat.
+
 ## Independent background startup (latest requirement)
 
 PASS. webot/start, stop and status now use the bridge-only supervisor, which neither imports Pero nor starts/stops it. Removed active combination startup modules; retained a migration-only old-stop requester incapable of starting services. Added explicit connection setup while both sides are stopped: it configures all scanned group routes and user-encrypted bridge credentials without launching processes. Existing configuration/data remain backed up and preserved. 24 offline cases and compilation checks passed. Isolated lifecycle verification used a real Pero background supervisor and synthetic bridge: Pero starts without a bridge; its own viewer authenticates to Manager; bridge connects independently; stopping either leaves the other running; all fixtures were then stopped. No real WeChat, messages or model requests were used. Actual desktop binding remains a user test.

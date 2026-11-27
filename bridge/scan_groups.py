@@ -13,15 +13,13 @@ def scan():
     from paths import find_xwechat_root
     from wechatauto import WeChatDB
     from account_binding import load_binding, verify_database, BoundDatabase
-    from wechat_desktop import Desktop
     binding=load_binding()
     root=find_xwechat_root()
     if root and Path(root).resolve()!=Path(binding.db_dir).resolve():
         raise ValueError('binding_db_root_mismatch')
-    guard=Desktop().guard(binding)
     raw_db=WeChatDB(db_dir=binding.db_dir,account=binding.account)
     verify_database(binding,raw_db)
-    db=BoundDatabase(raw_db,binding,guard)
+    db=BoundDatabase(raw_db,binding)
     info=db.get_self_info()
     if not isinstance(info,dict):raise ValueError('account_unavailable')
     account=str(info.get('wxid') or info.get('username') or info.get('user_name') or getattr(db,'wxid','') or '').strip()

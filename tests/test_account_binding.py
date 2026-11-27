@@ -84,7 +84,16 @@ class BindingTests(unittest.TestCase):
             bound.get_groups()
         self.db.account_dir = str(self.root / 'wxid_bot_ab')
         with self.assertRaises(BindingError):
-            guard.check()
+            bound.get_groups()
+
+    def test_database_reads_do_not_depend_on_desktop_guard(self):
+        from unittest.mock import Mock
+        guard=Mock()
+        guard.check.side_effect=BindingError('second window changed desktop evidence')
+        self.db.get_groups=lambda: [{'username':'bound@chatroom'}]
+        bound=BoundDatabase(self.db,self.binding,guard)
+        self.assertEqual(bound.get_groups(),[{'username':'bound@chatroom'}])
+        guard.check.assert_not_called()
 
 
 if __name__ == '__main__':

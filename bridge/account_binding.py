@@ -144,17 +144,23 @@ class BindingGuard:
 
 
 class BoundDatabase:
-    """Check account and desktop identity on both sides of DB operations."""
-    def __init__(self, db, binding, guard):
-        self._db, self._binding, self._guard = db, binding, guard
+    """Pin database identity independently from the sending desktop instance.
+
+    A lost GUI target must stop sending, not database reads. The optional guard
+    parameter is accepted for older callers but is intentionally never consulted.
+    """
+    def __init__(self, db, binding, guard=None):
+        self._db, self._binding = db, binding
+        self._failure = None
         self._check()
 
     def _check(self):
+        if self._failure:
+            raise BindingError(self._failure)
         try:
-            self._guard.check()
             verify_database(self._binding, self._db)
         except BindingError as error:
-            self._guard.failure = str(error)
+            self._failure = str(error)
             raise
 
     def __getattr__(self, name):

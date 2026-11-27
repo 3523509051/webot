@@ -318,11 +318,11 @@ class WeChatClient:
             raise BindingError('wechat.db_dir 与已绑定的数据根目录不一致。')
         if expected_wxid and expected_wxid != binding.wxid:
             raise BindingError('wechat.self_wxid 与已绑定账号不一致。')
-        desktop = Desktop()
-        self._binding_guard = desktop.guard(binding)
         raw_db = WeChatDB(db_dir=str(root), account=binding.account)
         verify_database(binding, raw_db)
-        self.db = BoundDatabase(raw_db, binding, self._binding_guard)
+        self.db = BoundDatabase(raw_db, binding)
+        desktop = Desktop()
+        self._binding_guard = desktop.guard(binding)
         self.gui = create_gui(desktop, self._binding_guard)
         # 回读确认与消息读取共用同一份已定位的数据库。
         self.gui._cached_db = self.db
