@@ -53,7 +53,7 @@ try {
     }
     Write-Host ('已保存微信数据根目录：' + $WechatRoot)
     Write-Host '其他配置保留；此操作尚未绑定账号，也不会启动服务或发送消息。'
-    Write-Host '下一步：只登录机器人微信 → 绑定微信账号.cmd → setup.cmd → start.cmd。'
+    Write-Host '下一步：只登录机器人微信 → 绑定微信账号.cmd → start.cmd。'
     exit 0
 } catch {
     $safeErrors = @(

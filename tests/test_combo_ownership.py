@@ -5,33 +5,37 @@ import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
-from wechat_pairing import select_groups,build_configuration
+from wechat_pairing import build_configuration
 
 
 class CombinationTests(unittest.TestCase):
     def setUp(self):
         self.groups=[{'id':'a@chatroom','name':'Test'},{'id':'b@chatroom','name':'Other'}]
 
-    def test_initial_selection_is_explicit(self):
-        self.assertEqual(select_groups(self.groups,{},choose=lambda _: '1'),self.groups[:1])
-        for answer in ('','0','3','all','1,not-a-number'):
-            with self.subTest(answer=answer),self.assertRaises(ValueError):
-                select_groups(self.groups,{},choose=lambda _:answer)
+    def test_all_scanned_groups_enabled_and_old_selection_does_not_filter_new_group(self):
+        core={'agents':[{'agent_id':'default'}],'channels':{'onebot11':{'port':6200}}}
+        previous={'account_wxid':'bot','group_ids':{'1':'a@chatroom'}}
+        result,bridge,labels,state=build_configuration(core,{'astrbot':{'self_id':10001}},
+            {'account_wxid':'bot','groups':self.groups},previous,'default')
+        self.assertEqual(set(bridge['wechat']['groups']),{'a@chatroom','b@chatroom'})
+        self.assertEqual(len(result['orchestration']['allowed_conversations']),2)
+        self.assertEqual(len(result['orchestration']['send_targets']),2)
 
-    def test_all_requires_literal_confirmation(self):
-        self.assertEqual(select_groups(self.groups,{},choose=lambda _:'ALL'),self.groups)
-
-    def test_restart_does_not_enable_new_groups(self):
-        self.assertEqual(select_groups(self.groups,{'group_ids':{'1':'a@chatroom'}},
-                                      choose=lambda _:self.fail('must not prompt')),self.groups[:1])
-
-    def test_missing_selected_groups_does_not_fall_back_to_all(self):
-        with self.assertRaises(ValueError):
-            select_groups(self.groups,{'group_ids':{'1':'missing@chatroom'}})
+    def test_group_missing_from_scan_is_not_monitored_by_bridge(self):
+        core={'agents':[{'agent_id':'default'}]}
+        _,bridge,_,_=build_configuration(core,{'astrbot':{'self_id':10001}},
+            {'account_wxid':'bot','groups':self.groups[:1]},
+            {'account_wxid':'bot','group_ids':{'1':'b@chatroom'}},'default')
+        self.assertEqual(set(bridge['wechat']['groups']),{'a@chatroom'})
 
     def test_pairing_rejects_account_switch(self):
         with self.assertRaises(ValueError):
             build_configuration({}, {}, {'account_wxid':'new'}, {'account_wxid':'old'},'default')
+
+    def test_no_selection_script_or_prompt_remains(self):
+        self.assertFalse((ROOT/'setup.cmd').exists())
+        source=(ROOT/'scripts/wechat_pairing.py').read_text(encoding='utf-8')
+        self.assertNotIn('select_groups',source)
 
     def test_supervisor_is_owned_by_webot_and_uses_separate_bridge_python(self):
         import combo_launcher

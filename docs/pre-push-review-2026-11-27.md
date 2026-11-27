@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## All-group startup revision (latest user decision)
+
+PASS. Removed setup.cmd and terminal group-selection filtering. Startup automatically synchronizes all scanned groups, refreshes this account's group routes and removes groups missing from its startup snapshot, preserving other accounts and private routes. Historical group IDs still protect collision checks. Added install-bridge.cmd and actionable missing-dependency hints. Group membership changes require stop/start; no live membership hot reload is claimed. Verification: 24 offline cases, Python compilation/whitespace checks and real isolated Pero plus synthetic bridge startup/cooperative stop all passed. No real WeChat or model requests were used. Supersedes the earlier selection description below.
+
 ## Configuration helper follow-up
 
 PASS: Added the user-requested double-click directory configuration helper and updated deployment instructions. Verified with Windows PowerShell 5.1 against temporary directories: first-run template creation, Chinese/space paths, preservation of unrelated fields, backup on update, invalid-root rejection, malformed-JSON preservation and no temporary files left behind. Errors do not echo raw configuration content. No real config or service was changed during verification. Script encoding includes UTF-8 BOM for PowerShell 5.1. Follow-up touches only the helper, its entry, ignore patterns and documentation.

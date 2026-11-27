@@ -30,6 +30,8 @@ Set-Location ..\..
 
 ## 3. 安装 webot 并配置数据根目录
 
+也可以在 webot 根目录双击 install-bridge.cmd，自动创建微信桥虚拟环境并安装依赖。它不会安装 Pero 依赖、绑定账号或启动服务。
+
 ```powershell
 Set-Location .\webot\bridge
 python -m venv .venv
@@ -48,20 +50,11 @@ Set-Location ..
 
 生成的 bridge/account-binding.json 保存账号目录和内部 wxid，不含聊天正文或密钥，不进入 Git。失败时不猜账号；核对桌面用户、目录、权限和驱动。不要从 SSH 或无交互桌面启动此步骤。
 
-## 5. 首次选择接入群：在命令行操作
+## 5. 自动接入全部群聊
 
-双击 webot 的 `setup.cmd`。程序读取已绑定账号的群列表，显示类似：
+不需要 setup.cmd，不需要在前端或命令行选择群。start.cmd 会自动扫描已绑定机器人账号的全部群并配置监听和路由。使用者通过把机器人加入群聊或让机器人退出群聊来控制接入范围。
 
-```text
-1. 测试群
-2. 朋友群
-3. 工作群
-Group numbers separated by commas; ALL explicitly enables all; blank cancels:
-```
-
-只接测试群就输入 `1`；接第 1 和第 3 个群输入 `1,3`。只有明确输入大写 `ALL` 才接全部群，空白或非法编号会取消。**这是命令行选择，不是前端新增的选择页面。** 建议先只选一个测试群。
-
-setup 会在 webot/data/combo/config.json 生成组合运行配置，并在本机 data/launcher 保存群配对记录和备份。它不调用模型、不发送微信消息。后续启动仅沿用已选择且仍可见的群，不自动接入其他新群。
+当前在每次组合启动时同步群列表，尚不在运行中热更新路由。入群或退群后，运行 stop.cmd，再运行 start.cmd 同步。全群接入不表示每条消息都会回复，仍按唤醒词和各群回复规则处理。
 
 ## 6. 启动并配置模型
 
@@ -79,10 +72,9 @@ setup 会在 webot/data/combo/config.json 生成组合运行配置，并在本�
 
 | 入口 | 用途 |
 |---|---|
-| start.cmd | 准备并后台启动组合；已有实例不会重复接管 |
+| start.cmd | 自动同步全部群并后台启动组合；已有实例不会重复接管 |
 | stop.cmd | 请求对话收尾并停止本次组合，不退出微信 |
 | status.cmd | 查看本组合的状态和日志路径 |
-| setup.cmd | 首次扫描与选择群，不启动服务 |
 | login-code.cmd | 明确显示当前用户的管理访问码 |
 | 打开控制室.cmd | 只打开本机网页，不重启业务 |
 | 绑定微信账号.cmd | 桥停止时核对并绑定机器人账号 |

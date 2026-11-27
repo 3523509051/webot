@@ -34,21 +34,23 @@ def build_configuration(core,bridge,snapshot,previous,agent_id):
     control=core.setdefault('orchestration',{})
     old_routes=control.get('routes',[])
     bindings={str(row['target']):row['agent_id'] for row in old_routes if str(row['account'])==account and row['conversation_type']=='group'}
-    # Retain other accounts, private routes and temporarily undiscovered known groups.
-    routes=list(old_routes)
+    # Refresh this account's group routes from this startup's snapshot.
+    # Private routes and other accounts are not affected.
+    routes=[row for row in old_routes if not (str(row['account'])==account
+            and row['conversation_type']=='group' and str(row['target']) not in targets)]
     for target in sorted(targets):
         if target not in bindings:routes.append({'account':account,'conversation_type':'group','target':target,'agent_id':agent_id})
     control['routes']=routes
-    allowed=set(control.get('allowed_conversations',[]))
+    prefix=f'onebot11:{account}:group:'
+    allowed={cid for cid in control.get('allowed_conversations',[]) if not cid.startswith(prefix)}
+    allowed.update(labels)
     old_known=set(previous.get('conversation_ids',[]))
-    for cid in labels:
-        # An explicitly removed previously managed group stays removed.
-        if cid not in old_known and (cid.rsplit(':',1)[1] not in bindings or cid in allowed):allowed.add(cid)
     control.update(auto_process_enabled=True,auto_send_enabled=True,allowed_conversations=sorted(allowed))
     control['send_accounts']=sorted(set(control.get('send_accounts',[]))|{account})
-    sends=set(control.get('send_targets',[]))
-    for target in targets:
-        if f'onebot11:{account}:group:{target}' not in old_known and (target not in bindings or target in sends):sends.add(target)
+    removed=set(bindings)-set(targets)
+    other_targets={str(row['target']) for row in routes if str(row['account'])!=account}
+    sends=set(control.get('send_targets',[]))-(removed-other_targets)
+    sends.update(targets)
     control['send_targets']=sorted(sends)
     bridge.setdefault('astrbot',{}).update(self_id=int(account),ws_url=f'ws://127.0.0.1:{channel["port"]}{channel["path"]}',token='',token_env=channel['token_env'])
     bridge.setdefault('wechat',{}).update(groups=group_map,group_whitelist=[],self_wxid=account_wxid)
@@ -78,7 +80,6 @@ def prepare(root,webot_root,config_path,state_dir,agent_id):
                               env={**os.environ,'PYTHONIOENCODING':'utf-8'},creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode or not output.exists():raise LauncherError('无法扫描已登录微信：请手动启动微信并登录，检查桥数据库目录。未覆盖现有配置。')
         snapshot=json.loads(output.read_text(encoding='utf-8'))
-    snapshot['groups']=select_groups(snapshot['groups'],previous)
     core,bridge,labels,new_state=build_configuration(core,bridge,snapshot,previous,agent_id)
     settings=Settings.model_validate(core)
     if settings.service.host not in ('127.0.0.1','localhost'):raise LauncherError('微信组合启动当前要求核心监听 127.0.0.1 或 localhost。')
@@ -99,21 +100,5 @@ def prepare(root,webot_root,config_path,state_dir,agent_id):
             if raw is None:path.unlink(missing_ok=True)
             else:atomic_write(path,raw)
         raise
-    print('已选群接入已同步：'+str(len(labels))+' 个群。保留原有人格、群关闭设置和主人访问范围。',flush=True)
+    print('全部扫描群接入已同步：'+str(len(labels))+' 个群。保留原有人格、群关闭设置和主人访问范围。',flush=True)
     return {'webot_root':webot,'python':python,'labels':labels_path,'token_env':core['channels']['onebot11']['token_env']}
-
-
-def select_groups(groups, previous, choose=input):
-    known=set((previous.get('group_ids') or {}).values())
-    if known:
-        selected=[row for row in groups if row['id'] in known]
-        if not selected: raise ValueError('Previously selected groups are unavailable; review pairing state.')
-        return selected
-    print('Select the groups to connect. No group is enabled until you choose.')
-    for index,row in enumerate(groups,1): print(str(index)+'. '+row['name'])
-    raw=choose('Group numbers separated by commas; ALL explicitly enables all; blank cancels: ').strip()
-    if raw=='ALL': return groups
-    try: indexes={int(value.strip()) for value in raw.split(',')}
-    except ValueError: raise ValueError('Group selection cancelled or invalid.') from None
-    if not indexes or min(indexes)<1 or max(indexes)>len(groups): raise ValueError('Invalid group selection.')
-    return [row for index,row in enumerate(groups,1) if index in indexes]

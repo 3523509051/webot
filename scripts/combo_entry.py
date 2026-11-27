@@ -28,7 +28,7 @@ def bridge_connected(url):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description='webot owns the local Pero + WeChat combination')
-    parser.add_argument('action',choices=['start','stop','status','login-code','prepare','check'])
+    parser.add_argument('action',choices=['start','stop','status','login-code','check'])
     parser.add_argument('--pero-root',type=Path,default=ROOT.parent/'Pero')
     args,extra=parser.parse_known_args(argv)
     pero=args.pero_root.expanduser().resolve()
@@ -40,7 +40,7 @@ def main(argv=None):
     command=[str(python),str(ROOT/'scripts/combo_launcher.py')]
     if args.action!='start':
         return subprocess.call(command+[args.action]+extra,cwd=ROOT,env=env)
-    # Prepare is interactive and must succeed before creating a hidden process.
+    # Automatically synchronize all groups before creating a hidden process.
     result=subprocess.call(command+['prepare']+extra,cwd=ROOT,env=env)
     if result:return result
     logs=ROOT/'logs/combo'
