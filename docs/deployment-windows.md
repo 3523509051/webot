@@ -38,7 +38,9 @@ Copy-Item config.example.json config.json
 Set-Location ..
 ```
 
-已有配置时不要覆盖 config.json。在微信“账号与存储”查看数据根目录，把它填写到 bridge/config.json 的 wechat.db_dir，例如 `D:/微信/xwechat_files`。填写账号子目录的上一级，而不是 db_storage 本身。根目录自定义位置必须显式配置，不沿用其他机器的路径。
+已有配置时不要覆盖 config.json。返回 webot 根目录，双击 **配置微信目录.cmd**，粘贴微信“设置 → 账号与存储”里的数据根目录，例如 `D:\微信\xwechat_files`。脚本检查账号目录结构，首次从模板创建配置，已有配置则先备份，只修改 wechat.db_dir。无需手工编辑 JSON，也无需预先安装 Python 才能运行这个配置脚本。
+
+填写账号子目录的上一级，而不是 db_storage 本身。目录可含空格、中文或带外层引号。脚本不会选择或绑定账号，也不会启动服务、发送消息。完成后继续下一节账号绑定。
 
 ## 4. 单号登录与账号绑定
 

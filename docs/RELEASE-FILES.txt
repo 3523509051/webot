@@ -1,4 +1,5 @@
 Source publication file list (2026-11-27)
+Configuration helper addition: scripts/configure-wechat.ps1; 配置微信目录.cmd
 Repository: webot
 
 "\346\211\223\345\274\200\346\216\247\345\210\266\345\256\244.cmd"

@@ -89,3 +89,4 @@ bridge/account-binding.json
 
 /bridge/account-binding.json
 /bridge/binding-*.tmp
+/bridge/.config-write-*.tmp
