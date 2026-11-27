@@ -28,7 +28,7 @@ def bridge_connected(url):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description='webot owns the local Pero + WeChat combination')
-    parser.add_argument('action',choices=['start','stop','status','login-code','check'])
+    parser.add_argument('action',choices=['start','stop','status','check'])
     parser.add_argument('--pero-root',type=Path,default=ROOT.parent/'Pero')
     args,extra=parser.parse_known_args(argv)
     pero=args.pero_root.expanduser().resolve()

@@ -15,6 +15,7 @@ import webbrowser
 ROOT=Path(__file__).resolve().parents[1]
 PERO_ROOT=Path(os.environ.get('WEBOT_PERO_ROOT',str(ROOT.parent/'Pero'))).resolve()
 sys.path.insert(0,str(PERO_ROOT/'src'))
+from pero.manager.local_access import management_token, AccessCodeError
 
 
 class LauncherError(Exception):pass
@@ -58,24 +59,19 @@ def load_state(state_dir):
     except (OSError,ValueError):raise LauncherError('无法读取启动状态；请检查启动窗口。') from None
 
 
-def management_token(state_dir,*,create=False):
-    override=os.environ.get('PERO_MANAGEMENT_TOKEN','').strip()
-    return protected_token(state_dir/'management-token.dpapi',override,create=create)
-
-
-def protected_token(path,override='',*,create=False):
+def protected_transport_token(path,override='',*,create=False):
     from pero.manager.vault import DPAPI,VaultError
     try:
         if override and create:
             atomic_write(path,DPAPI.transform(override.encode('utf-8')))
             return override
         if path.exists():return DPAPI.transform(path.read_bytes(),decrypt=True).decode('utf-8')
-        if not create:raise LauncherError('尚未保存管理访问码，请先运行 start.cmd。')
+        if not create:raise LauncherError('尚未保存 OneBot 连接令牌，请先运行 start.cmd。')
         value=secrets.token_urlsafe(32)
         atomic_write(path,DPAPI.transform(value.encode('utf-8')))
         return value
     except (VaultError,UnicodeError,OSError):
-        raise LauncherError('无法读取当前 Windows 用户加密的管理访问码；请使用原运行用户检查，不会覆盖旧密文。') from None
+        raise LauncherError('无法读取当前 Windows 用户加密的 OneBot 连接令牌；请使用原运行用户检查，不会覆盖旧密文。') from None
 
 
 def request(url,path,*,token='',body=None):
@@ -178,7 +174,7 @@ def start(args,state_dir):
             except Exception as exc:raise LauncherError('微信组合配置失败（'+type(exc).__name__+'）；未启动微信。请检查扫描、账号与配置。') from None
         available(settings.service.host,settings.service.port);available('127.0.0.1',args.manager_port)
         if settings.channels.onebot11.enabled:available(settings.channels.onebot11.host,settings.channels.onebot11.port)
-        token=management_token(state_dir,create=True)
+        token=management_token(create=True,legacy_paths=[state_dir/'management-token.dpapi'])
         from windows_job import WindowsJob
         job=WindowsJob();run_id=secrets.token_hex(8);run_dir=state_dir/'runs'/run_id;run_dir.mkdir(parents=True)
         core_url=f'http://127.0.0.1:{settings.service.port}'
@@ -190,7 +186,7 @@ def start(args,state_dir):
         log_dir=ROOT/'logs'/'launcher'/run_id
         env=dict(os.environ,PERO_MANAGEMENT_TOKEN=token,PERO_MANAGER_URL=manager_url,PYTHONIOENCODING='utf-8',PYTHONUNBUFFERED='1')
         if pairing:
-            env[pairing['token_env']]=protected_token(state_dir/'onebot-token.dpapi',create=True)
+            env[pairing['token_env']]=protected_transport_token(state_dir/'onebot-token.dpapi',create=True)
         env['PYTHONPATH']=str(PERO_ROOT/'src')+(os.pathsep+env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
         children=[]
         for component in ('core','manager'):
@@ -234,7 +230,7 @@ def start(args,state_dir):
                 time.sleep(0.3)
             else:raise LauncherError('桥未连接，请核对微信、webot 依赖和 bridge.log。')
             print('微信桥已连接；微信客户端由你手动启动和登录。',flush=True)
-        print('Pero 已启动。\n控制室：'+manager_url+'\n日志：'+str(log_dir)+'\n运行 login-code.cmd 查看管理访问码。\n请保留本窗口；用 stop.cmd 或 Ctrl+C 请求收尾停止。',flush=True)
+        print('Pero 已启动。\n控制室：'+manager_url+'\n日志：'+str(log_dir)+'\n在 Pero 目录运行 login-code.cmd 查看管理访问码。\n请保留本窗口；用 stop.cmd 或 Ctrl+C 请求收尾停止。',flush=True)
         if os.environ.get('PERO_MANAGEMENT_TOKEN'):print('本次沿用环境变量中的管理访问码。',flush=True)
         if not args.no_browser:webbrowser.open(manager_url)
         requested=False
@@ -267,7 +263,7 @@ def start(args,state_dir):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description='Pero Windows 本地启动器')
-    parser.add_argument('action',choices=['start','stop','status','login-code','check','prepare'],nargs='?',default='start')
+    parser.add_argument('action',choices=['start','stop','status','check','prepare'],nargs='?',default='start')
     parser.add_argument('--config',help='配置路径；默认 config/local.json，首次从 default.json 创建')
     parser.add_argument('--manager-port',type=int,default=8766)
     parser.add_argument('--state-dir',type=Path,default=ROOT/'data/launcher')
@@ -289,8 +285,6 @@ def main(argv=None):
         return 0
     if args.action=='start':return start(args,state_dir)
     if args.action=='check':check(args);print('配置、依赖和前端构建检查通过。');return 0
-    if args.action=='login-code':
-        print(management_token(state_dir));return 0  # Explicit user action only; never a log file.
     if args.action=='stop':return stop_request(args,state_dir)
     if not running(state_dir):print('当前没有本脚本管理的运行实例。');return 0
     state=load_state(state_dir)
@@ -302,5 +296,5 @@ def main(argv=None):
 
 if __name__=='__main__':
     try:raise SystemExit(main())
-    except LauncherError as exc:print('启动器：'+str(exc),file=sys.stderr);raise SystemExit(1)
+    except (LauncherError,AccessCodeError) as exc:print('启动器：'+str(exc),file=sys.stderr);raise SystemExit(1)
     except KeyboardInterrupt:raise SystemExit(130)

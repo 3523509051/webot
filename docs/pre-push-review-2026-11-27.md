@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Management credential ownership correction
+
+PASS. Removed webot/login-code.cmd and both webot viewing CLI actions. Combination startup calls Pero's access-code module and supplies its old encrypted file only as a migration candidate. webot retains separate OneBot transport-token responsibility. Updated the deployment guide to use Pero/login-code.cmd. Verified 24 offline cases, independent Pero lifecycle, combined lifecycle with a synthetic bridge, and successful protected API authentication using the code read through Pero's viewer. No actual WeChat or model interaction; old access-code values were not printed or recorded.
+
 ## Installer ownership correction
 
 PASS. Per user request, install-pero.cmd is removed from webot and belongs to the Pero repository root; webot/install.cmd delegates to that script before installing bridge dependencies. Verified the adjacent default layout, a custom Pero path containing spaces, early stop when the Pero installer fails, and rejection of an incomplete standalone Pero checkout using temporary fixtures. No actual dependency installation or service startup was performed. Updated documentation and prerequisite diagnostics accordingly.

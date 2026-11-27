@@ -1,4 +1,5 @@
 Source publication file list (2026-11-27)
+Ownership update: login-code.cmd removed; access codes are viewed through Pero/login-code.cmd
 Installation entry: install.cmd (delegates to adjacent Pero/install-pero.cmd)
 Configuration helper addition: scripts/configure-wechat.ps1; 配置微信目录.cmd
 Latest revision: install-bridge.cmd replaces the removed setup.cmd selection step.
