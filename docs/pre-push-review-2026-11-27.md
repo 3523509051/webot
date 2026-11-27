@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Bridge-only automatic web control
+
+PASS. Added machine-readable status to the existing bridge launcher and automatic registration of its trusted checkout path during explicit connection setup. Manager delegates only start/stop to this existing bridge supervisor; it never starts or closes WeChat. Core/Manager process ownership remains in Pero. Verified 25 focused offline regressions and an isolated real Pero HTTP control lifecycle with a synthetic bridge, including bridge stop/start without stopping Core. No real messages or model calls. Docs distinguish web Core-only control from complete Pero stop.cmd shutdown.
+
 ## Standard webot onboarding sequence
 
 PASS, documentation only. README and deployment guide now use the user's five-step order: log in to WeChat, install-bridge.cmd, configure directory, bind account, connect Pero. Explicitly states that Pero's backend environment must already be installed and both services stopped for the fifth step; separates independent startup and Pero-owned login/model configuration from webot onboarding. No placeholder, runtime, credential or memory behavior changed. Cross-checked against connect_pero.py and installer/entry filenames.

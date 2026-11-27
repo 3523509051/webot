@@ -60,6 +60,7 @@ def supervise():
 def main(argv=None):
     parser=argparse.ArgumentParser(description='只管理 webot 微信桥')
     parser.add_argument('action',choices=['start','supervise','stop','status'])
+    parser.add_argument('--json',action='store_true',help='以 JSON 输出桥进程状态')
     args=parser.parse_args(argv)
     if args.action=='supervise':return supervise()
     if args.action=='start':
@@ -83,9 +84,10 @@ def main(argv=None):
             if child.poll() is not None and not running():raise LauncherError('webot 启动失败，请查看 logs/bridge 中的日志。')
             time.sleep(.3)
         raise LauncherError('尚未确认桥初始化；请查看 logs/bridge，或运行 status.cmd。')
-    if not running():print('webot 当前未运行。');return 0
+    if not running():
+        print(json.dumps({'running':False}) if args.json else 'webot 当前未运行。');return 0
     state=json.loads((STATE/'session.json').read_text())
-    if args.action=='status':print(json.dumps(state,ensure_ascii=False,indent=2));return 0
+    if args.action=='status':print(json.dumps({'running':True,**state},ensure_ascii=False,indent=2));return 0
     atomic_write(STATE/'stop-request.json',json.dumps({'run_id':state['run_id']}).encode())
     deadline=time.monotonic()+40
     while running() and time.monotonic()<deadline:time.sleep(.3)

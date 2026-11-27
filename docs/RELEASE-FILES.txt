@@ -1,4 +1,4 @@
-Source publication file list (2026-11-27; independent background services)
+Source publication file list (2026-11-27; automatic local core and bridge control)
 Repository: webot
 
 .env.example

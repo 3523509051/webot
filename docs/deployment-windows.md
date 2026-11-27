@@ -27,6 +27,8 @@
 
 ## 独立使用
 
+新版 Pero 控制室会自动发现本机核心控制进程，并识别并列目录的已配置 webot（非并列目录通过连接Pero.cmd 自动登记）。网页的 Pero 按钮只控制核心、保持控制室在线；桥按钮只调用 webot 的桥启动器、不关闭微信。Pero/stop.cmd 仍完全退出 Pero，webot/stop.cmd 只退出桥。
+
 | 入口 | 行为 |
 |---|---|
 | Pero/start.cmd | 后台启动 Core、Manager；打开控制室，不启动 webot |

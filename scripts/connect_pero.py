@@ -38,6 +38,7 @@ def main():
             raise LauncherError('Pero 核心端口仍在使用，请先停止该实例。')
     result=prepare(pero,ROOT,config,ROOT/'data/connection-state','')
     atomic_write(pero/'data/manager/scope-labels.json',Path(result['labels']).read_bytes())
+    atomic_write(pero/'data/manager/local-bridge.json',json.dumps({'root':str(ROOT)}).encode('utf-8'))
     credentials={
         'PERO_MANAGEMENT_TOKEN':management_token(create=True,legacy_paths=[ROOT/'data/launcher/management-token.dpapi']),
         'PERO_ONEBOT_TOKEN':onebot_token(create=True,legacy_paths=[ROOT/'data/launcher/onebot-token.dpapi'])}
