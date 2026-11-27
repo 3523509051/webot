@@ -1,5 +1,9 @@
 # Pre-push review — 2026-11-27
 
+## Installer ownership correction
+
+PASS. Per user request, install-pero.cmd is removed from webot and belongs to the Pero repository root; webot/install.cmd delegates to that script before installing bridge dependencies. Verified the adjacent default layout, a custom Pero path containing spaces, early stop when the Pero installer fails, and rejection of an incomplete standalone Pero checkout using temporary fixtures. No actual dependency installation or service startup was performed. Updated documentation and prerequisite diagnostics accordingly.
+
 ## Installation prerequisite follow-up
 
 PASS for the installer/diagnostic change: added install-pero.cmd (backend requirements, editable package and npm frontend build) and install.cmd (Pero then bridge). Both stop on failures and never launch services. Launcher now distinguishes a missing repository, missing virtual environment and missing frontend build; stop/status remain usable without frontend assets. Verified invalid repository paths are rejected before installation, Python compilation and whitespace checks. Full dependency download/build remains the user's clean-deployment step; no pre-existing environment was copied into the fresh checkout.

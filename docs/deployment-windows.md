@@ -17,7 +17,7 @@ git clone https://github.com/3523509051/webot.git
 
 **推荐一键安装：** 两个仓库克隆好后，双击 webot 根目录的 **install.cmd**，依次安装 Pero 后端、构建控制室前端，再安装微信桥依赖。需要先安装 64 位 Python 3.10+、Node.js 和 npm。此脚本不会启动服务或复制旧配置。
 
-如果只缺 Pero 环境，双击 **install-pero.cmd** 即可。下面命令是手动安装的等价步骤；使用 install.cmd 完成双方安装后，可跳过下方重复的虚拟环境与依赖安装命令，直接配置微信目录、绑定账号并启动。
+如果只缺 Pero 环境，双击 **Pero 根目录的 install-pero.cmd** 即可。下面命令是手动安装的等价步骤；使用 install.cmd 完成双方安装后，可跳过下方重复的虚拟环境与依赖安装命令，直接配置微信目录、绑定账号并启动。
 
 ```powershell
 Set-Location .\Pero

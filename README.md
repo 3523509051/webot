@@ -1,6 +1,6 @@
 # webot
 
-首次克隆后，先双击 `install.cmd` 安装相邻 Pero 的后端和前端、以及本仓库的微信桥依赖，再配置微信目录并绑定账号。只缺 Pero 环境时可单独运行 `install-pero.cmd`。
+首次克隆后，先双击 `install.cmd` 安装相邻 Pero 的后端和前端、以及本仓库的微信桥依赖，再配置微信目录并绑定账号。只缺 Pero 环境时可单独运行相邻 Pero 根目录的 `install-pero.cmd`。
 
 **Windows 本机部署从这里开始：[完整安装、账号绑定、全群接入和组合启动](docs/deployment-windows.md)。组合由 webot 管理，Pero 不再提供微信组合入口。**
 
