@@ -12,8 +12,16 @@ def scan():
     require_client_running()
     from paths import find_xwechat_root
     from wechatauto import WeChatDB
+    from account_binding import load_binding, verify_database, BoundDatabase
+    from wechat_desktop import Desktop
+    binding=load_binding()
     root=find_xwechat_root()
-    db=WeChatDB(db_dir=str(root)) if root else WeChatDB()
+    if root and Path(root).resolve()!=Path(binding.db_dir).resolve():
+        raise ValueError('binding_db_root_mismatch')
+    guard=Desktop().guard(binding)
+    raw_db=WeChatDB(db_dir=binding.db_dir,account=binding.account)
+    verify_database(binding,raw_db)
+    db=BoundDatabase(raw_db,binding,guard)
     info=db.get_self_info()
     if not isinstance(info,dict):raise ValueError('account_unavailable')
     account=str(info.get('wxid') or info.get('username') or info.get('user_name') or getattr(db,'wxid','') or '').strip()
@@ -50,7 +58,9 @@ def main():
         print('已扫描群数量：'+str(len(result['groups'])))
         return 0
     except Exception as exc:
-        print('扫描失败（'+type(exc).__name__+'）：请手动启动微信并登录，再核对数据库目录和依赖。',file=sys.stderr)
+        from account_binding import BindingError
+        detail=str(exc) if isinstance(exc,BindingError) else '请核对微信登录、数据根目录、账号绑定和依赖。'
+        print('扫描失败（'+type(exc).__name__+'）：'+detail,file=sys.stderr)
         return 1
     finally:ownership.close()
 

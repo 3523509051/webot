@@ -1,5 +1,7 @@
 # webot
 
+**Windows 本机部署从这里开始：[完整安装、账号绑定、命令行选群和组合启动](docs/deployment-windows.md)。组合由 webot 管理，Pero 不再提供微信组合入口。**
+
 **连接微信与 Agent。**
 
 webot 是面向 Windows 微信桌面端的消息桥。它通过本地数据库增量读取消息，通过桌面界面执行发送，并以 OneBot v11 事件和动作连接上层应用。
@@ -166,9 +168,9 @@ webot 主动连接上层的 OneBot v11 反向 WebSocket 服务，握手提供 `X
 
 ### 与 Pero 自动组合启动
 
-安装双方依赖、构建 Pero 前端后，**手动启动微信并登录**，从 Pero 运行 `start-wechat.cmd`。并列目录自动找到 webot；否则使用 `start-wechat.cmd --webot-root "D:\你的目录\webot"`。
+安装双方依赖、构建 Pero 前端后，手动登录机器人微信，先运行 `绑定微信账号.cmd`，再从 webot 运行 `setup.cmd` 在命令行选择群，最后运行 `start.cmd`。并列目录自动找到 Pero；否则使用 `start.cmd --pero-root "D:\你的目录\Pero"`。
 
-该入口扫描已登录账号的全部群，自动对齐桥连接、令牌、监听群和 Pero 路由／发送范围，再启动 Core、控制室和桥。它不会启动或关闭微信客户端，不会自动登录。后续组合重启重新扫描，新群默认开放；Pero 控制室手动关闭的群保持关闭，主人跨群读取范围仍独立勾选。
+setup 在终端列出群名与编号，输入如 `1,3` 选择接入范围；只有明确输入 `ALL` 才选择全部群。前端目前没有这个首次选群入口。后续启动沿用已选群，不自动开放其他新群；控制室中手动关闭的群保持关闭。
 
 组合启动会修改 bridge/config.json 并先备份原文件。当前桥支持 astrbot.token_env 从进程环境读取连接令牌，组合入口负责加密保存与注入。详细步骤见 [Pero 微信组合使用指南](https://github.com/3523509051/Pero/blob/main/docs/wechat-combination.md)。下方供单独运行桥使用。
 
@@ -300,7 +302,7 @@ OneBot 连接令牌、内部管理访问码和模型 API Key 是不同凭据。w
 
 仓库仍保留旧插件、Docker Compose 及 `start.cmd`、`restart-all.cmd`、`restart-astr.cmd` 等运维入口。它们面向原 AstrBot 组合，不是 Pero 的通用启动器；`scripts/webot-service.ps1` 当前仍包含 Docker／AstrBot 服务控制。
 
-使用 Pero 时，优先使用 **Pero 仓库的 start-wechat.cmd**，或分别启动 Pero 和 bridge/main.py。webot 根目录的旧 start.cmd 仍属于 AstrBot 组合，不会因此成为 Pero 启动器。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
+使用 Pero 时，优先使用 **webot 仓库的 start.cmd**，或分别启动 Pero 和 bridge/main.py。webot 根目录的 start.cmd/stop.cmd/status.cmd 现统一管理 Pero 组合；旧 AstrBot 脚本仅作历史兼容。旧资料保留用于历史参考，当前桥能力以本文及源码为准。
 
 ## 文档与开发
 

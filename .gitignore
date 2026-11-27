@@ -81,3 +81,11 @@ data-*/
 *.p12
 *.pem
 *.key
+
+# Machine-specific binding and local release work
+.release-work/
+conversation-recovery/
+bridge/account-binding.json
+
+/bridge/account-binding.json
+/bridge/binding-*.tmp

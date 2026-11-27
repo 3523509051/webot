@@ -981,6 +981,7 @@ async def _main() -> int:
             bot_nickname=cfg["wechat"].get("bot_nickname", ""),
             db_dir=cfg["wechat"].get("db_dir") or None,
             verify_send=bool(cfg["wechat"].get("verify_send", False)),
+            expected_wxid=str(cfg["wechat"].get("self_wxid") or ""),
         )
     except Exception as e:  # noqa: BLE001
         log.error("初始化微信失败（微信是否已登录并保持运行？）: %s", e)

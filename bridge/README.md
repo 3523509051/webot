@@ -40,3 +40,5 @@ Copy-Item config.example.json config.json
 `probe_db.py` 定位数据目录，`introspect.py` 检查数据库可读性及消息结构。输出可能包含账号、群名、路径或消息字段，公开分享前请脱敏。
 
 根目录的旧 AstrBot 运维脚本不是 Pero 的启动器。不要据脚本名称直接重启不相关的服务；具体职责和兼容范围见首页。
+
+首次使用请先在仓库根目录运行绑定微信账号.cmd，再运行 setup.cmd 选择测试群和 start.cmd 启动。详见 ../docs/deployment-windows.md。

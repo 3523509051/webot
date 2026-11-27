@@ -35,7 +35,11 @@ class SendOutcomeTests(unittest.TestCase):
         client.verify_send = True
         client._names = ['测试群']
         uia = types.SimpleNamespace(current_chat=lambda: '测试群', send_text=Mock(return_value=True))
+        client._resolve_send_target = Mock(return_value=(uia, None, False, 'verified'))
+        client._cache_input_box = Mock()
+        client._confirm_target = Mock()
         mark = {'seq': 7}
+        client.self_wxid = 'wxid_bot'
         verify = Mock(return_value=True)
         client.gui = types.SimpleNamespace(_get_uia=lambda: uia, send_msg=Mock(),
                                           _send_watermark=lambda name: mark, _verify_sent=verify)
@@ -63,6 +67,7 @@ class SendOutcomeTests(unittest.TestCase):
         client.verify_send = False
         client._names = ['测试群']
         uia = types.SimpleNamespace(current_chat=lambda: '测试群', send_text=lambda text: False)
+        client._resolve_send_target = Mock(return_value=(uia, None, False, 'verified'))
         client.gui = types.SimpleNamespace(_get_uia=lambda: uia, send_msg=Mock())
         self.assertEqual(client.send_text('测试群', 'hello').state, 'unknown')
         client.gui.send_msg.assert_not_called()

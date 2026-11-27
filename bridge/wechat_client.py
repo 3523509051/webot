@@ -25,6 +25,7 @@ import html
 import logging
 import re
 import time
+from functools import wraps
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,24 @@ from send_result import SendResult
 from image_index import ImageIndex
 
 log = logging.getLogger("wechat")
+
+
+def requires_bound_account(method):
+    """Stop before any send fallback when a bound desktop identity is lost."""
+    @wraps(method)
+    def checked(self, *args, **kwargs):
+        guard = getattr(self, '_binding_guard', None)
+        if guard is not None:
+            from account_binding import BindingError
+            try:
+                guard.check()
+            except BindingError:
+                self._confirmed_target = None
+                self._last_input_box = None
+                log.error('微信账号绑定已失效，本次发送取消；请检查绑定后重启桥。')
+                return SendResult('failed', 'account_binding_invalid')
+        return method(self, *args, **kwargs)
+    return checked
 
 
 class WatermarkUnavailable(RuntimeError):
@@ -282,17 +301,29 @@ class WeChatClient:
         bot_nickname: str = "",
         db_dir: str | None = None,
         verify_send: bool = False,
+        expected_wxid: str = "",
     ) -> None:
         from wechatauto import WeChatDB
-        from wechatauto.guia import WeChatGUI
         from paths import find_xwechat_root
+        from account_binding import load_binding, verify_database, BindingError, BoundDatabase
+        from wechat_desktop import Desktop
+        from bound_wechat_gui import create_gui
 
         self.bot_nickname = bot_nickname
         # verify_send=True 会回读数据库确认发送，最多额外等 8 秒（延迟大）
         self.verify_send = verify_send
-        root = db_dir or find_xwechat_root()
-        self.db = WeChatDB(db_dir=str(root)) if root else WeChatDB()
-        self.gui = WeChatGUI()
+        binding = load_binding()
+        root = db_dir or find_xwechat_root() or binding.db_dir
+        if Path(root).resolve() != Path(binding.db_dir).resolve():
+            raise BindingError('wechat.db_dir 与已绑定的数据根目录不一致。')
+        if expected_wxid and expected_wxid != binding.wxid:
+            raise BindingError('wechat.self_wxid 与已绑定账号不一致。')
+        desktop = Desktop()
+        self._binding_guard = desktop.guard(binding)
+        raw_db = WeChatDB(db_dir=str(root), account=binding.account)
+        verify_database(binding, raw_db)
+        self.db = BoundDatabase(raw_db, binding, self._binding_guard)
+        self.gui = create_gui(desktop, self._binding_guard)
         # 回读确认与消息读取共用同一份已定位的数据库。
         self.gui._cached_db = self.db
 
@@ -1753,6 +1784,7 @@ class WeChatClient:
                                   reason=reason or "exception")
             return SendResult('unknown', 'private_image_error:' + type(exc).__name__)
 
+    @requires_bound_account
     def send_image(self, group_name: str, path: str,
                    verify: bool | None = None, probe: bool = True) -> SendResult:
         """发送本地图片/GIF（微信图片气泡，不是真正的 sticker 消息）。
@@ -1892,6 +1924,7 @@ class WeChatClient:
             log.warning("微信置前失败: %s", e)
             return False
 
+    @requires_bound_account
     def send_text_and_image(
         self, group_name: str, text: str, path: str
     ) -> dict:
@@ -1966,6 +1999,7 @@ class WeChatClient:
                 target["input_box"] = None
             log.debug("缓存输入框坐标失败: %s", e)
 
+    @requires_bound_account
     def send_text(self, group_name: str, text: str) -> SendResult:
         """发送文本。**已在目标会话时直接发送，绝不查找 / 切换会话。**
 
@@ -2405,6 +2439,7 @@ class WeChatClient:
         )
         return True
 
+    @requires_bound_account
     def send_at(self, group_name: str, member: str, before: str, after: str) -> SendResult:
         """在目标群里 @ 成员后发送正文。**UIA 快路径优先**，失败则退化为普通发送。
 
@@ -2561,6 +2596,7 @@ class WeChatClient:
         )
         return True
 
+    @requires_bound_account
     def send_at_multi(self, group_name: str, parts: list[dict]) -> SendResult:
         """发送带一个或多个真实 @ 的正文；失败退化为去掉 @ 的纯文本。"""
         outcome = self._uia_send_parts(group_name, parts)
